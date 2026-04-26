@@ -18,6 +18,11 @@ The raw key is returned ONCE at /admin/genkey time and never stored.
 """
 
 from __future__ import annotations
+from pathlib import Path
+import subprocess
+
+if not Path(".keys/private.pem").exists():
+    subprocess.run(["python", "keypair.py"], check=True)
 
 import hmac
 import os
