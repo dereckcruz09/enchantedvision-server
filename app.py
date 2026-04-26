@@ -18,11 +18,6 @@ The raw key is returned ONCE at /admin/genkey time and never stored.
 """
 
 from __future__ import annotations
-from pathlib import Path
-import subprocess
-
-if not Path(".keys/private.pem").exists():
-    subprocess.run(["python", "keypair.py"], check=True)
 
 import hmac
 import os
@@ -54,6 +49,7 @@ load_dotenv()
 
 
 PRIVATE_KEY_PATH = os.getenv("PRIVATE_KEY_PATH", ".keys/private.pem")
+PRIVATE_KEY_PEM_B64 = os.getenv("PRIVATE_KEY_PEM_B64", "")
 DB_PATH = os.getenv("DB_PATH", ".keys/keys.db")
 TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", str(7 * 24 * 3600)))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
@@ -67,7 +63,61 @@ if not ADMIN_API_KEY or ADMIN_API_KEY == "replace-me-with-a-long-random-secret":
     )
 
 
-SK = load_private_key(PRIVATE_KEY_PATH)
+def _load_signing_key():
+    """Load the Ed25519 private key.
+
+    Priority:
+      1. PRIVATE_KEY_PEM_B64 env var (base64-encoded PEM). Use this on hosts
+         without persistent disk (Render free tier, etc.) so the key survives
+         restarts as part of the platform's secret store.
+      2. PRIVATE_KEY_PATH file (default behaviour for self-hosted / Docker
+         volumes / Fly.io with a volume).
+
+    Auto-generates and writes to PRIVATE_KEY_PATH if neither is available
+    (dev convenience only; do NOT rely on this in production on ephemeral
+    filesystems).
+    """
+    import base64
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    if PRIVATE_KEY_PEM_B64:
+        try:
+            pem = base64.b64decode(PRIVATE_KEY_PEM_B64)
+            sk = serialization.load_pem_private_key(pem, password=None)
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _E
+            if not isinstance(sk, _E):
+                raise ValueError("PRIVATE_KEY_PEM_B64 is not Ed25519")
+            print("[startup] Loaded private key from PRIVATE_KEY_PEM_B64 env var.")
+            return sk
+        except Exception as e:
+            raise RuntimeError(f"Failed to load PRIVATE_KEY_PEM_B64: {e}")
+
+    from pathlib import Path
+    p = Path(PRIVATE_KEY_PATH)
+    if p.exists():
+        print(f"[startup] Loaded private key from file: {p}")
+        return load_private_key(p)
+
+    # Last-resort autogeneration. Loud warning so it's obvious in logs.
+    print("!" * 60)
+    print("WARNING: No PRIVATE_KEY_PEM_B64 and no file at PRIVATE_KEY_PATH.")
+    print("Generating a new ephemeral keypair. This will INVALIDATE every")
+    print("existing client install on the next restart. Set PRIVATE_KEY_PEM_B64")
+    print("as a Render/Fly/etc. secret to make this permanent.")
+    print("!" * 60)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    sk = Ed25519PrivateKey.generate()
+    pem = sk.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    p.write_bytes(pem)
+    return sk
+
+
+SK = _load_signing_key()
 STORE = KeyStore(DB_PATH)
 
 
@@ -79,6 +129,21 @@ if ALLOWED_ORIGINS:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+# ─── Public key endpoint (debug aid) ────────────────────────────────────────
+# Public; lets you compare what the server is signing against what the client
+# has embedded. The public key is not secret. Useful when redeploying.
+
+
+@app.get("/pubkey")
+def pubkey():
+    from cryptography.hazmat.primitives import serialization
+    raw = SK.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return {"pubkey_hex": raw.hex()}
 
 
 # ─── Models ──────────────────────────────────────────────────────────────────
