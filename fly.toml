@@ -1,0 +1,43 @@
+# Sample Fly.io config. Run `fly launch --no-deploy` to claim an app name,
+# then customise this file. Replace `enchantedvision-activation` with the
+# app name fly.io assigns to you (or your own).
+app = "enchantedvision-activation"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PRIVATE_KEY_PATH = "/app/.keys/private.pem"
+  DB_PATH = "/app/.keys/keys.db"
+  TOKEN_TTL_SECONDS = "604800"
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  # ADMIN_API_KEY is set with: fly secrets set ADMIN_API_KEY=...
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.http_checks]]
+    interval = "30s"
+    grace_period = "5s"
+    method = "get"
+    path = "/healthz"
+    protocol = "http"
+    timeout = "2s"
+
+[mounts]
+  source = "ev_keys"
+  destination = "/app/.keys"
