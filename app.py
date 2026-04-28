@@ -205,6 +205,20 @@ def activate(payload: ActivateIn):
         raise HTTPException(status_code=400, detail="invalid hwid")
 
     rec = STORE.find_by_hwid(hwid)
+
+    if rec is None:
+        # HWID may have drifted (e.g. disk reconnect, wmic timeout). Fall back
+        # to looking up by key hash so the customer isn't locked out.
+        rec = STORE.find_by_key_hash(sha256_hex(key))
+        if rec is not None:
+            # Verify the key matches before trusting the record.
+            if not hmac.compare_digest(rec.key_hash, sha256_hex(key)):
+                rec = None
+            else:
+                # Key is valid — update the stored HWID to the current one so
+                # future HWID-based lookups work again.
+                STORE.update_hwid(rec.key_id, hwid)
+
     if rec is None:
         raise HTTPException(status_code=403, detail="no key for this hwid")
     if rec.revoked:

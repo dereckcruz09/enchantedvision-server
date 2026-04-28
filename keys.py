@@ -130,6 +130,22 @@ class KeyStore:
             ).fetchone()
         return self._row_to_record(row) if row else None
 
+    def find_by_key_hash(self, key_hash: str) -> Optional[KeyRecord]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM keys WHERE key_hash = ? ORDER BY created_at DESC LIMIT 1",
+                (key_hash,),
+            ).fetchone()
+        return self._row_to_record(row) if row else None
+
+    def update_hwid(self, key_id: str, new_hwid: str) -> None:
+        """Update the stored HWID hash and hint for a key (handles HWID drift)."""
+        with self._conn() as c:
+            c.execute(
+                "UPDATE keys SET hwid_hash = ?, hwid_hint = ? WHERE key_id = ?",
+                (sha256_hex(new_hwid), new_hwid[:8] + "…", key_id),
+            )
+
     def find_by_key_id(self, key_id: str) -> Optional[KeyRecord]:
         with self._conn() as c:
             row = c.execute("SELECT * FROM keys WHERE key_id = ?", (key_id,)).fetchone()
