@@ -319,6 +319,23 @@ def health_check():
     return jsonify({"status": "healthy", "timestamp": datetime.utcnow().isoformat()})
 
 
+@app.route("/test-discord", methods=["GET"])
+def test_discord():
+    """Test if we can reach Discord API"""
+    try:
+        response = requests.get("https://discord.com/api/v10/oauth2/applications/@me", timeout=10)
+        return jsonify({
+            "can_reach_discord": True,
+            "status_code": response.status_code,
+            "response": response.text[:200]
+        })
+    except Exception as e:
+        return jsonify({
+            "can_reach_discord": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/login", methods=["GET"])
 def login():
     """Initiate OAuth2 login flow"""
