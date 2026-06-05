@@ -1,5 +1,5 @@
-fastapi==0.115.4
-uvicorn[standard]==0.32.0
-pydantic==2.9.2
-cryptography==43.0.3
-python-dotenv==1.0.1
+Flask==3.0.0
+python-dotenv==1.0.0
+requests==2.31.0
+Werkzeug==3.0.1
+gunicorn==21.2.0
