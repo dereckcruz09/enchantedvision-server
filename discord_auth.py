@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Discord OAuth2 endpoints
 DISCORD_API_BASE = "https://discord.com/api/v10"
-DISCORD_OAUTH_BASE = "https://discord.com/api/oauth2"
+DISCORD_OAUTH_BASE = "https://discord.com/oauth2"
 AUTHORIZE_URL = f"{DISCORD_OAUTH_BASE}/authorize"
 TOKEN_URL = f"{DISCORD_OAUTH_BASE}/token"
 
@@ -92,13 +92,6 @@ class DiscordAuth:
         Returns:
             Token dict with access_token, refresh_token, expires_in, or None if failed
         """
-        print("=== EXCHANGE_CODE_FOR_TOKEN CALLED ===", flush=True)
-        print(f"=== CODE: {code[:20]} ===", flush=True)
-        print(f"=== CLIENT_ID: {self.client_id} ===", flush=True)
-        print(f"=== CLIENT_SECRET: {self.client_secret[:10]}... ===", flush=True)
-        print(f"=== REDIRECT_URI: {self.redirect_uri} ===", flush=True)
-        print(f"=== TOKEN_URL: {TOKEN_URL} ===", flush=True)
-        
         payload = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
@@ -108,8 +101,12 @@ class DiscordAuth:
         }
 
         try:
-            print(f"=== PAYLOAD: {payload} ===", flush=True)
-            print("=== SENDING POST REQUEST ===", flush=True)
+            logger.info(f"[TOKEN_EXCHANGE] Starting with code: {code[:20]}...")
+            logger.info(f"[TOKEN_EXCHANGE] Client ID: {self.client_id}")
+            logger.info(f"[TOKEN_EXCHANGE] Redirect URI: {self.redirect_uri}")
+            logger.info(f"[TOKEN_EXCHANGE] Token URL: {TOKEN_URL}")
+            logger.info(f"[TOKEN_EXCHANGE] Payload keys: {list(payload.keys())}")
+            logger.info(f"[TOKEN_EXCHANGE] Sending POST request...")
             
             headers = {
                 "Content-Type": "application/x-www-form-urlencoded"
@@ -117,25 +114,33 @@ class DiscordAuth:
             
             response = requests.post(TOKEN_URL, data=payload, headers=headers, timeout=10)
             
-            print(f"=== RESPONSE STATUS: {response.status_code} ===", flush=True)
-            print(f"=== RESPONSE CONTENT_TYPE: {response.headers.get('content-type')} ===", flush=True)
-            print(f"=== RESPONSE TEXT (FULL): {response.text} ===", flush=True)
+            logger.info(f"[TOKEN_EXCHANGE] Response status: {response.status_code}")
+            logger.info(f"[TOKEN_EXCHANGE] Response headers: {response.headers}")
+            logger.info(f"[TOKEN_EXCHANGE] Response text length: {len(response.text)}")
+            logger.info(f"[TOKEN_EXCHANGE] Response text (first 500 chars): {response.text[:500]}")
             
             if response.status_code == 200:
                 try:
                     token_data = response.json()
-                    print(f"=== SUCCESS! Token keys: {list(token_data.keys())} ===", flush=True)
+                    logger.info(f"[TOKEN_EXCHANGE] Successfully parsed JSON. Keys: {list(token_data.keys())}")
                     return token_data
                 except Exception as json_err:
-                    print(f"=== JSON PARSE FAILED: {json_err} ===", flush=True)
+                    logger.error(f"[TOKEN_EXCHANGE] Failed to parse response as JSON: {json_err}")
+                    logger.error(f"[TOKEN_EXCHANGE] Response text: {response.text}")
                     return None
             else:
-                print(f"=== ERROR: Status {response.status_code} ===", flush=True)
+                logger.error(f"[TOKEN_EXCHANGE] Non-200 response: {response.status_code}")
+                logger.error(f"[TOKEN_EXCHANGE] Response text: {response.text[:1000]}")
                 return None
-        except Exception as e:
-            print(f"=== EXCEPTION: {e} ===", flush=True)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[TOKEN_EXCHANGE] Request exception: {e}")
             import traceback
-            print(traceback.format_exc(), flush=True)
+            logger.error(f"[TOKEN_EXCHANGE] Traceback: {traceback.format_exc()}")
+            return None
+        except Exception as e:
+            logger.error(f"[TOKEN_EXCHANGE] Unexpected error: {e}")
+            import traceback
+            logger.error(f"[TOKEN_EXCHANGE] Traceback: {traceback.format_exc()}")
             return None
 
     def refresh_access_token(self, refresh_token: str) -> Optional[Dict]:
@@ -254,7 +259,7 @@ class DiscordAuth:
             refresh_token: Refresh token
             expires_in: Token expiration in seconds
         """
-        expires_at = time.time() + expires_in - 60
+        expires_at = time.time() + expires_in - 60  # Refresh 1 min before expiry
         self.token_cache[user_id] = {
             "access_token": access_token,
             "refresh_token": refresh_token,
@@ -279,9 +284,11 @@ class DiscordAuth:
         token_data = self.token_cache[user_id]
         expires_at = token_data.get("expires_at", 0)
 
+        # Token still valid
         if time.time() < expires_at:
             return token_data["access_token"]
 
+        # Try to refresh
         refresh_token = token_data.get("refresh_token")
         if not refresh_token:
             return None
@@ -310,16 +317,13 @@ class DiscordAuth:
         Returns:
             Tuple of (success: bool, user_id: Optional[str], user_info: Optional[Dict])
         """
-        print("=== AUTHENTICATE_USER CALLED ===", flush=True)
-        print(f"=== CODE: {code[:20]} ===", flush=True)
-        
         logger.info(f"[AUTHENTICATE] Starting authentication with code: {code[:20]}...")
         
+        # Exchange code for token
         logger.info("[AUTHENTICATE] Exchanging code for token...")
         token_data = self.exchange_code_for_token(code)
         if not token_data:
             logger.error("[AUTHENTICATE] Token exchange failed - no token data returned")
-            print("=== TOKEN_DATA IS NONE ===", flush=True)
             return False, None, None
 
         logger.info(f"[AUTHENTICATE] Token exchange successful. Token keys: {list(token_data.keys())}")
@@ -333,6 +337,7 @@ class DiscordAuth:
             logger.error(f"[AUTHENTICATE] Token data: {token_data}")
             return False, None, None
 
+        # Get user info
         logger.info("[AUTHENTICATE] Getting user info...")
         user_info = self.get_user_info(access_token)
         if not user_info:
@@ -342,6 +347,7 @@ class DiscordAuth:
         logger.info(f"[AUTHENTICATE] Got user info: {user_info.get('username', 'unknown')}")
         user_id = user_info.get("id")
 
+        # Cache token
         if user_id:
             logger.info(f"[AUTHENTICATE] Caching token for user {user_id}")
             self.cache_token(user_id, access_token, refresh_token, expires_in)
