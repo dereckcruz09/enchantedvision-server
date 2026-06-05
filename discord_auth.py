@@ -101,17 +101,32 @@ class DiscordAuth:
         }
 
         try:
-            logger.info(f"Exchanging code for token. Redirect URI: {self.redirect_uri}")
-            response = requests.post(TOKEN_URL, data=payload, timeout=10)
-            logger.info(f"Token exchange response status: {response.status_code}")
-            logger.info(f"Token exchange response: {response.text}")
+            logger.info(f"[TOKEN_EXCHANGE] Starting with code: {code[:20]}...")
+            logger.info(f"[TOKEN_EXCHANGE] Redirect URI: {self.redirect_uri}")
+            logger.info(f"[TOKEN_EXCHANGE] Token URL: {TOKEN_URL}")
+            logger.info(f"[TOKEN_EXCHANGE] Sending POST request...")
             
-            response.raise_for_status()
-            return response.json()
+            response = requests.post(TOKEN_URL, data=payload, timeout=10)
+            
+            logger.info(f"[TOKEN_EXCHANGE] Response status: {response.status_code}")
+            logger.info(f"[TOKEN_EXCHANGE] Response headers: {dict(response.headers)}")
+            logger.info(f"[TOKEN_EXCHANGE] Response text length: {len(response.text)}")
+            logger.info(f"[TOKEN_EXCHANGE] Response text: {response.text}")
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"[TOKEN_EXCHANGE] Error response: {response.status_code} - {response.text}")
+                return None
+        except ValueError as e:
+            logger.error(f"[TOKEN_EXCHANGE] JSON parse error: {e}")
+            logger.error(f"[TOKEN_EXCHANGE] Response was: {response.text if 'response' in locals() else 'N/A'}")
+            return None
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to exchange code: {e}")
-            logger.error(f"Response status: {response.status_code if 'response' in locals() else 'N/A'}")
-            logger.error(f"Response text: {response.text if 'response' in locals() else 'N/A'}")
+            logger.error(f"[TOKEN_EXCHANGE] Request error: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"[TOKEN_EXCHANGE] Unexpected error: {e}")
             return None
 
     def refresh_access_token(self, refresh_token: str) -> Optional[Dict]:
