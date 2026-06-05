@@ -36,11 +36,16 @@ REQUIRED_GUILD_ID = os.getenv("DISCORD_SERVER_ID")
 REQUIRED_ROLES = os.getenv("REQUIRED_ROLES", "").split(",")
 REQUIRED_ROLES = [r.strip() for r in REQUIRED_ROLES if r.strip()]
 
+print(f"=== STARTUP: DISCORD_CLIENT_ID = {DISCORD_CLIENT_ID} ===", flush=True)
+print(f"=== STARTUP: DISCORD_CLIENT_SECRET = {DISCORD_CLIENT_SECRET[:10] if DISCORD_CLIENT_SECRET else 'NONE'}... ===", flush=True)
+print(f"=== STARTUP: DISCORD_REDIRECT_URI = {DISCORD_REDIRECT_URI} ===", flush=True)
+print(f"=== STARTUP: REQUIRED_GUILD_ID = {REQUIRED_GUILD_ID} ===", flush=True)
+print(f"=== STARTUP: REQUIRED_ROLES = {REQUIRED_ROLES} ===", flush=True)
+
 if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
     raise ValueError("Missing required Discord credentials in environment")
 
 discord_auth = DiscordAuth(DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_REDIRECT_URI)
-
 # OAuth2 scopes
 DEFAULT_SCOPES = ["identify", "guilds", "guilds.members.read"]
 
