@@ -33,19 +33,23 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:5000/callback")
 REQUIRED_GUILD_ID = os.getenv("DISCORD_SERVER_ID")
-REQUIRED_ROLES = os.getenv("REQUIRED_ROLES", "").split(",")
+REQUIRED_ROLES = os.getenv("DISCORD_REQUIRED_ROLES", "").split(",")
 REQUIRED_ROLES = [r.strip() for r in REQUIRED_ROLES if r.strip()]
 
-print(f"=== STARTUP: DISCORD_CLIENT_ID = {DISCORD_CLIENT_ID} ===", flush=True)
-print(f"=== STARTUP: DISCORD_CLIENT_SECRET = {DISCORD_CLIENT_SECRET[:10] if DISCORD_CLIENT_SECRET else 'NONE'}... ===", flush=True)
-print(f"=== STARTUP: DISCORD_REDIRECT_URI = {DISCORD_REDIRECT_URI} ===", flush=True)
-print(f"=== STARTUP: REQUIRED_GUILD_ID = {REQUIRED_GUILD_ID} ===", flush=True)
-print(f"=== STARTUP: REQUIRED_ROLES = {REQUIRED_ROLES} ===", flush=True)
+logger.info(f"=== DISCORD AUTH CONFIG ===")
+logger.info(f"CLIENT_ID: {DISCORD_CLIENT_ID}")
+logger.info(f"CLIENT_SECRET: {DISCORD_CLIENT_SECRET[:20] if DISCORD_CLIENT_SECRET else 'NONE'}...")
+logger.info(f"REDIRECT_URI: {DISCORD_REDIRECT_URI}")
+logger.info(f"REQUIRED_GUILD_ID: {REQUIRED_GUILD_ID}")
+logger.info(f"REQUIRED_ROLES (raw): {os.getenv('DISCORD_REQUIRED_ROLES')}")
+logger.info(f"REQUIRED_ROLES (parsed): {REQUIRED_ROLES}")
+logger.info(f"=== END CONFIG ===")
 
 if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
     raise ValueError("Missing required Discord credentials in environment")
 
 discord_auth = DiscordAuth(DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_REDIRECT_URI)
+
 # OAuth2 scopes
 DEFAULT_SCOPES = ["identify", "guilds", "guilds.members.read"]
 
@@ -412,17 +416,20 @@ def callback():
 
         # Check required roles if any
         if REQUIRED_ROLES:
+            logger.info(f"[CALLBACK] Checking required roles: {REQUIRED_ROLES}")
             user_roles = discord_auth.get_user_roles_in_guild(
                 access_token, REQUIRED_GUILD_ID, user_id
             )
+            logger.info(f"[CALLBACK] User {user_id} roles from API: {user_roles}")
             if not user_roles or not any(r in user_roles for r in REQUIRED_ROLES):
                 logger.warning(f"User {user_id} missing required roles. User roles: {user_roles}, Required: {REQUIRED_ROLES}")
                 return render_template_string(
                     DENIED_TEMPLATE,
                     reason=f"You don't have the required role(s)"
                 ), 403
-    else:
-        logger.warning("REQUIRED_GUILD_ID not configured - skipping guild membership check")
+            logger.info(f"[CALLBACK] User {user_id} has all required roles")
+        else:
+            logger.warning("[CALLBACK] REQUIRED_ROLES is empty - skipping role check")
 
     # Store user in session
     session["user_id"] = user_id
