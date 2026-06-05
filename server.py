@@ -304,12 +304,23 @@ def validate_token(f):
     return decorated_function
 
 
+# In-memory auth status cache
+auth_status_cache = {}
+
 @app.route("/", methods=["GET"])
 def index():
     """Home page - show login or access granted"""
     user_id = session.get("user_id")
     
     if user_id:
+        # Store in cache for GUI to retrieve
+        auth_status_cache[user_id] = {
+            "authenticated": True,
+            "user_id": user_id,
+            "username": session.get("user_info", {}).get("username", "User"),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
         # Already authenticated
         user_info = session.get("user_info", {})
         return render_template_string(
@@ -320,6 +331,18 @@ def index():
     
     # Not authenticated
     return render_template_string(LOGIN_TEMPLATE)
+
+
+@app.route("/get-auth-status", methods=["GET"])
+def get_auth_status():
+    """Get authentication status from cache"""
+    # Get the most recent auth status
+    if auth_status_cache:
+        # Return the latest cached status
+        latest = list(auth_status_cache.values())[-1]
+        return jsonify(latest), 200
+    
+    return jsonify({"error": "No authentication status"}), 404
 
 
 @app.route("/health", methods=["GET"])
@@ -423,21 +446,6 @@ def callback():
             logger.info(f"[CALLBACK] User {user_id} roles from API: {user_roles}")
             if not user_roles or not any(r in user_roles for r in REQUIRED_ROLES):
                 logger.warning(f"User {user_id} missing required roles. User roles: {user_roles}, Required: {REQUIRED_ROLES}")
-                
-                # Write denial to file
-                import tempfile
-                import json as json_module
-                auth_file = os.path.join(tempfile.gettempdir(), ".enchanted_auth_status.json")
-                try:
-                    with open(auth_file, "w") as f:
-                        json_module.dump({
-                            "authenticated": False,
-                            "reason": "Missing required role",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }, f)
-                except Exception as e:
-                    logger.warning(f"Failed to write auth file: {e}")
-                
                 return render_template_string(
                     DENIED_TEMPLATE,
                     reason=f"You don't have the required role(s)"
@@ -449,22 +457,6 @@ def callback():
     # Store user in session
     session["user_id"] = user_id
     session["user_info"] = user_info
-    
-    # Write auth status to a temporary file for the GUI to read
-    import tempfile
-    import json as json_module
-    auth_file = os.path.join(tempfile.gettempdir(), ".enchanted_auth_status.json")
-    try:
-        with open(auth_file, "w") as f:
-            json_module.dump({
-                "authenticated": True,
-                "user_id": user_id,
-                "username": user_info.get("username"),
-                "timestamp": datetime.utcnow().isoformat()
-            }, f)
-        logger.info(f"Wrote auth status to {auth_file}")
-    except Exception as e:
-        logger.warning(f"Failed to write auth file: {e}")
 
     logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated")
     return redirect("/")
