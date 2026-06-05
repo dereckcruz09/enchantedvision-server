@@ -1,6 +1,7 @@
 """
-Discord OAuth2 Backend Server
+Discord OAuth2 Backend Server with Web Interface
 Flask application for handling OAuth2 callbacks and token validation
+Includes a simple web interface for role verification
 """
 
 import os
@@ -10,7 +11,7 @@ from functools import wraps
 from typing import Optional, Dict, Tuple
 from datetime import datetime
 
-from flask import Flask, request, jsonify, session, redirect
+from flask import Flask, request, jsonify, session, redirect, render_template_string
 from dotenv import load_dotenv
 import requests
 
@@ -21,7 +22,7 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_urlsafe(32))
+app.secret_key = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +44,240 @@ discord_auth = DiscordAuth(DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_RED
 # OAuth2 scopes
 DEFAULT_SCOPES = ["identify", "guilds", "guilds.members.read"]
 
+# HTML Templates
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Discord Verification</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 400px;
+            text-align: center;
+        }
+        h1 {
+            color: #333;
+            margin: 0 0 10px 0;
+            font-size: 28px;
+        }
+        p {
+            color: #666;
+            margin: 0 0 30px 0;
+            font-size: 16px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 32px;
+            background: #5865F2;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            transition: background 0.2s;
+        }
+        .btn:hover {
+            background: #4752C4;
+        }
+        .discord-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="discord-icon">🔐</div>
+        <h1>Discord Verification</h1>
+        <p>Click below to verify your Discord account and role</p>
+        <a href="/login" class="btn">Login with Discord</a>
+    </div>
+</body>
+</html>
+"""
+
+SUCCESS_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Access Granted ✓</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #00b894 0%, #00cec9 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 400px;
+            text-align: center;
+        }
+        h1 {
+            color: #00b894;
+            margin: 0 0 10px 0;
+            font-size: 28px;
+        }
+        p {
+            color: #666;
+            margin: 10px 0;
+            font-size: 16px;
+        }
+        .checkmark {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        .user-info {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .user-info p {
+            margin: 5px 0;
+            font-size: 14px;
+        }
+        .btn {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #00b894;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+        }
+        .btn:hover {
+            background: #009473;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="checkmark">✓</div>
+        <h1>Access Granted!</h1>
+        <p>You have been verified successfully.</p>
+        <div class="user-info">
+            <p><strong>Username:</strong> {{ username }}</p>
+            <p><strong>User ID:</strong> {{ user_id }}</p>
+        </div>
+        <p style="color: #888; font-size: 14px;">You have access to this application.</p>
+        <a href="/logout" class="btn">Logout</a>
+    </div>
+</body>
+</html>
+"""
+
+DENIED_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Access Denied ✗</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #ee5a6f 0%, #f79f1f 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 400px;
+            text-align: center;
+        }
+        h1 {
+            color: #ee5a6f;
+            margin: 0 0 10px 0;
+            font-size: 28px;
+        }
+        p {
+            color: #666;
+            margin: 10px 0;
+            font-size: 16px;
+        }
+        .icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        .reason {
+            background: #ffe0e0;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+            text-align: left;
+            border-left: 4px solid #ee5a6f;
+        }
+        .reason p {
+            margin: 5px 0;
+            font-size: 14px;
+            color: #c0392b;
+        }
+        .btn {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #ee5a6f;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+        }
+        .btn:hover {
+            background: #d63447;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">✗</div>
+        <h1>Access Denied</h1>
+        <p>You don't have permission to access this application.</p>
+        <div class="reason">
+            <p><strong>Reason:</strong></p>
+            <p>{{ reason }}</p>
+        </div>
+        <p style="color: #888; font-size: 14px;">If you believe this is an error, please contact the administrator.</p>
+        <a href="/" class="btn">Try Again</a>
+    </div>
+</body>
+</html>
+"""
+
 
 def validate_token(f):
     """Decorator to validate auth token from request"""
@@ -54,12 +289,28 @@ def validate_token(f):
             return jsonify({"error": "Missing or invalid authorization header"}), 401
 
         token = auth_header[7:]  # Remove "Bearer " prefix
-        # In a real app, validate the token against your session/database
-        # For now, we'll pass it through
         request.user_token = token
         return f(*args, **kwargs)
 
     return decorated_function
+
+
+@app.route("/", methods=["GET"])
+def index():
+    """Home page - show login or access granted"""
+    user_id = session.get("user_id")
+    
+    if user_id:
+        # Already authenticated
+        user_info = session.get("user_info", {})
+        return render_template_string(
+            SUCCESS_TEMPLATE,
+            username=user_info.get("username", "User"),
+            user_id=user_id
+        )
+    
+    # Not authenticated
+    return render_template_string(LOGIN_TEMPLATE)
 
 
 @app.route("/health", methods=["GET"])
@@ -70,66 +321,101 @@ def health_check():
 
 @app.route("/login", methods=["GET"])
 def login():
-    """
-    Initiate OAuth2 login flow
-    Returns authorization URL for client to redirect to
-    """
+    """Initiate OAuth2 login flow"""
     state = secrets.token_urlsafe(32)
     session["oauth_state"] = state
 
     auth_url = discord_auth.get_authorization_url(DEFAULT_SCOPES, state)
-    return jsonify({"auth_url": auth_url, "state": state})
+    return redirect(auth_url)
 
 
 @app.route("/callback", methods=["GET"])
 def callback():
-    """
-    OAuth2 callback endpoint
-    Discord redirects here with authorization code
-    """
+    """OAuth2 callback endpoint"""
     # Validate state for CSRF protection
     state = request.args.get("state")
     if not state or state != session.get("oauth_state"):
         logger.warning("Invalid state in OAuth callback")
-        return (
-            jsonify({"error": "Invalid state parameter - possible CSRF attack"}),
-            403,
-        )
+        return render_template_string(
+            DENIED_TEMPLATE,
+            reason="Invalid state parameter - possible CSRF attack"
+        ), 403
 
     # Check for errors from Discord
     error = request.args.get("error")
     if error:
         error_description = request.args.get("error_description", "Unknown error")
         logger.error(f"Discord OAuth error: {error} - {error_description}")
-        return jsonify({"error": f"Discord error: {error}"}), 400
+        return render_template_string(
+            DENIED_TEMPLATE,
+            reason=f"Discord error: {error}"
+        ), 400
 
     # Get authorization code
     code = request.args.get("code")
     if not code:
         logger.warning("No authorization code in callback")
-        return jsonify({"error": "No authorization code received"}), 400
+        return render_template_string(
+            DENIED_TEMPLATE,
+            reason="No authorization code received"
+        ), 400
 
     # Exchange code for token and get user info
     success, user_id, user_info = discord_auth.authenticate_user(code)
     if not success:
         logger.error("Failed to authenticate user")
-        return jsonify({"error": "Failed to authenticate with Discord"}), 401
+        return render_template_string(
+            DENIED_TEMPLATE,
+            reason="Failed to authenticate with Discord"
+        ), 401
+
+    # Check guild membership
+    access_token = user_info.get("id")  # We'll need the actual access token from discord_auth
+    guilds = discord_auth.get_user_guilds(user_info.get("id"))
+    if not guilds or not any(g["id"] == REQUIRED_GUILD_ID for g in guilds):
+        logger.warning(f"User {user_id} not in required guild")
+        return render_template_string(
+            DENIED_TEMPLATE,
+            reason=f"You are not a member of the required Discord server"
+        ), 403
+
+    # Check required roles if any
+    if REQUIRED_ROLES:
+        user_roles = discord_auth.get_user_roles_in_guild(
+            user_info.get("id"), REQUIRED_GUILD_ID, user_id
+        )
+        if not user_roles or not any(r in user_roles for r in REQUIRED_ROLES):
+            logger.warning(f"User {user_id} missing required roles")
+            return render_template_string(
+                DENIED_TEMPLATE,
+                reason=f"You don't have the required role(s)"
+            ), 403
 
     # Store user in session
     session["user_id"] = user_id
     session["user_info"] = user_info
 
-    # Redirect to client success page (you can customize this)
-    return redirect(f"/?auth_success=true&user_id={user_id}")
+    logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated")
+    return redirect("/")
 
 
+@app.route("/logout", methods=["GET"])
+def logout():
+    """Logout user and clear cache"""
+    user_id = session.get("user_id")
+    if user_id:
+        discord_auth.clear_user_cache(user_id)
+        logger.info(f"Logged out user {user_id}")
+
+    session.clear()
+    return redirect("/")
+
+
+# Keep existing API endpoints for backward compatibility
 @app.route("/user", methods=["GET"])
 @validate_token
 def get_user():
-    """
-    Get current user information
-    Requires valid session
-    """
+    """Get current user information"""
     user_id = session.get("user_id")
     if not user_id:
         return jsonify({"error": "Not authenticated"}), 401
@@ -147,10 +433,7 @@ def get_user():
 
 @app.route("/validate-token", methods=["POST"])
 def validate_token_endpoint():
-    """
-    Validate Discord access token
-    Accepts: {"access_token": "..."}
-    """
+    """Validate Discord access token"""
     data = request.get_json()
     if not data or "access_token" not in data:
         return jsonify({"error": "Missing access_token"}), 400
@@ -167,11 +450,7 @@ def validate_token_endpoint():
 
 @app.route("/check-membership", methods=["POST"])
 def check_membership():
-    """
-    Check if user is in required guild
-    Accepts: {"access_token": "...", "guild_id": "..."}
-    Returns: {"is_member": bool, "reason": str}
-    """
+    """Check if user is in required guild"""
     data = request.get_json()
     if not data or "access_token" not in data:
         return jsonify({"error": "Missing access_token"}), 400
@@ -182,12 +461,10 @@ def check_membership():
     if not guild_id:
         return jsonify({"error": "guild_id required"}), 400
 
-    # Get user guilds
     guilds = discord_auth.get_user_guilds(access_token)
     if guilds is None:
         return jsonify({"error": "Failed to fetch user guilds"}), 500
 
-    # Check if user is in the required guild
     is_member = any(g["id"] == guild_id for g in guilds)
 
     if not is_member:
@@ -203,11 +480,7 @@ def check_membership():
 
 @app.route("/check-roles", methods=["POST"])
 def check_roles():
-    """
-    Check if user has required roles in guild
-    Accepts: {"access_token": "...", "guild_id": "...", "required_roles": [...]}
-    Returns: {"has_required_roles": bool, "user_roles": [...], "missing_roles": [...]}
-    """
+    """Check if user has required roles in guild"""
     data = request.get_json()
     if not data or "access_token" not in data:
         return jsonify({"error": "Missing access_token"}), 400
@@ -219,7 +492,6 @@ def check_roles():
     if not guild_id:
         return jsonify({"error": "guild_id required"}), 400
 
-    # First check membership
     guilds = discord_auth.get_user_guilds(access_token)
     if guilds is None:
         return jsonify({"error": "Failed to fetch user guilds"}), 500
@@ -236,19 +508,16 @@ def check_roles():
             403,
         )
 
-    # Get user info
     user_info = discord_auth.get_user_info(access_token)
     if not user_info:
         return jsonify({"error": "Failed to fetch user info"}), 500
 
     user_id = user_info.get("id")
 
-    # Get user roles
     user_roles = discord_auth.get_user_roles_in_guild(access_token, guild_id, user_id)
     if user_roles is None:
         return jsonify({"error": "Failed to fetch user roles"}), 500
 
-    # Check for required roles (if configured)
     if required_roles:
         missing_roles = [r for r in required_roles if r not in user_roles]
         has_required_roles = len(missing_roles) == 0
@@ -265,7 +534,6 @@ def check_roles():
             }
         )
 
-    # If no specific roles required, return user's roles
     return jsonify(
         {
             "has_required_roles": True,
@@ -277,12 +545,7 @@ def check_roles():
 
 @app.route("/check-auth", methods=["POST"])
 def check_auth():
-    """
-    Complete authentication check
-    Verifies: token validity, server membership, required roles
-    Accepts: {"access_token": "...", "guild_id": "...", "required_roles": [...]}
-    Returns: comprehensive auth status
-    """
+    """Complete authentication check"""
     data = request.get_json()
     if not data or "access_token" not in data:
         return jsonify({"error": "Missing access_token"}), 400
@@ -303,7 +566,6 @@ def check_auth():
         "errors": [],
     }
 
-    # Check 1: Token validity
     user_info = discord_auth.get_user_info(access_token)
     if not user_info:
         result["errors"].append("Invalid or expired access token")
@@ -317,7 +579,6 @@ def check_auth():
     }
     user_id = user_info.get("id")
 
-    # Check 2: Guild membership
     if guild_id:
         guilds = discord_auth.get_user_guilds(access_token)
         if guilds is None:
@@ -331,7 +592,6 @@ def check_auth():
             result["errors"].append(f"User not a member of guild {guild_id}")
             return jsonify(result), 403
 
-        # Check 3: Required roles (only if member and roles are specified)
         if required_roles:
             user_roles = discord_auth.get_user_roles_in_guild(
                 access_token, guild_id, user_id
@@ -357,20 +617,6 @@ def check_auth():
         ]
 
     return jsonify(result), 200 if result["authenticated"] else 401
-
-
-@app.route("/logout", methods=["POST"])
-def logout():
-    """
-    Logout user and clear cache
-    """
-    user_id = session.get("user_id")
-    if user_id:
-        discord_auth.clear_user_cache(user_id)
-        logger.info(f"Logged out user {user_id}")
-
-    session.clear()
-    return jsonify({"message": "Logged out successfully"})
 
 
 @app.errorhandler(404)
