@@ -15,8 +15,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Discord OAuth2 endpoints
-DISCORD_API_BASE = "https://discordapp.com/api/v10"
-DISCORD_OAUTH_BASE = "https://discordapp.com/oauth2"
+DISCORD_API_BASE = "https://discord.com/api/v10"
+DISCORD_OAUTH_BASE = "https://discord.com/oauth2"
 AUTHORIZE_URL = f"{DISCORD_OAUTH_BASE}/authorize"
 TOKEN_URL = f"{DISCORD_OAUTH_BASE}/token"
 
