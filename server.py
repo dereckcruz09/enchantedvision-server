@@ -329,20 +329,28 @@ def index():
             user_id=user_id
         )
     
-    # Not authenticated
+    # Not authenticated - clear cache
+    auth_status_cache.clear()
     return render_template_string(LOGIN_TEMPLATE)
 
 
 @app.route("/get-auth-status", methods=["GET"])
 def get_auth_status():
-    """Get authentication status from cache"""
-    # Get the most recent auth status
-    if auth_status_cache:
-        # Return the latest cached status
-        latest = list(auth_status_cache.values())[-1]
-        return jsonify(latest), 200
+    """Get authentication status - always check current session"""
+    user_id = session.get("user_id")
+    user_info = session.get("user_info", {})
     
-    return jsonify({"error": "No authentication status"}), 404
+    if user_id and user_info:
+        # User has active session
+        return jsonify({
+            "authenticated": True,
+            "user_id": user_id,
+            "username": user_info.get("username", "User"),
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
+    else:
+        # No active session
+        return jsonify({"error": "Not authenticated"}), 401
 
 
 @app.route("/health", methods=["GET"])

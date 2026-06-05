@@ -160,10 +160,8 @@ class DiscordAuthSimple(QDialog):
     
     def _start_waiting(self):
         """Query server API for authentication status"""
-        import json
-        
         try:
-            # Query the server API for auth status
+            # Query the server API for auth status - this checks the CURRENT session
             response = self.session.get(
                 f"{self.server_url}/get-auth-status",
                 timeout=5
@@ -185,12 +183,12 @@ class DiscordAuthSimple(QDialog):
                 print("[AuthDialog] Authentication successful!")
                 self.done(1)
                 return
-            elif response.status_code == 404:
-                print("[AuthDialog] No auth status on server")
+            elif response.status_code == 401:
+                print("[AuthDialog] Not authenticated (401)")
                 QMessageBox.warning(
                     self,
-                    "Not Authenticated",
-                    "Server has no authentication status.\n\nMake sure you completed Discord login."
+                    "Access Denied",
+                    "You are not authenticated.\n\nMake sure you have the required role."
                 )
                 return
             else:
