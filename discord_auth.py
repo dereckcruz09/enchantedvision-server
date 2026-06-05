@@ -106,7 +106,11 @@ class DiscordAuth:
             logger.info(f"[TOKEN_EXCHANGE] Token URL: {TOKEN_URL}")
             logger.info(f"[TOKEN_EXCHANGE] Sending POST request...")
             
-            response = requests.post(TOKEN_URL, data=payload, timeout=10)
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            
+            response = requests.post(TOKEN_URL, data=payload, headers=headers, timeout=10)
             
             logger.info(f"[TOKEN_EXCHANGE] Response status: {response.status_code}")
             logger.info(f"[TOKEN_EXCHANGE] Response headers: {dict(response.headers)}")
@@ -303,26 +307,44 @@ class DiscordAuth:
         Returns:
             Tuple of (success: bool, user_id: Optional[str], user_info: Optional[Dict])
         """
+        logger.info(f"[AUTHENTICATE] Starting authentication with code: {code[:20]}...")
+        
         # Exchange code for token
+        logger.info("[AUTHENTICATE] Exchanging code for token...")
         token_data = self.exchange_code_for_token(code)
         if not token_data:
+            logger.error("[AUTHENTICATE] Token exchange failed - no token data returned")
             return False, None, None
 
+        logger.info(f"[AUTHENTICATE] Token exchange successful. Token keys: {list(token_data.keys())}")
+        
         access_token = token_data.get("access_token")
         refresh_token = token_data.get("refresh_token")
         expires_in = token_data.get("expires_in", 3600)
 
-        # Get user info
-        user_info = self.get_user_info(access_token)
-        if not user_info:
+        if not access_token:
+            logger.error("[AUTHENTICATE] No access_token in token response")
+            logger.error(f"[AUTHENTICATE] Token data: {token_data}")
             return False, None, None
 
+        # Get user info
+        logger.info("[AUTHENTICATE] Getting user info...")
+        user_info = self.get_user_info(access_token)
+        if not user_info:
+            logger.error("[AUTHENTICATE] Failed to get user info")
+            return False, None, None
+
+        logger.info(f"[AUTHENTICATE] Got user info: {user_info.get('username', 'unknown')}")
         user_id = user_info.get("id")
 
         # Cache token
         if user_id:
+            logger.info(f"[AUTHENTICATE] Caching token for user {user_id}")
             self.cache_token(user_id, access_token, refresh_token, expires_in)
+        else:
+            logger.warning("[AUTHENTICATE] No user_id in user_info")
 
+        logger.info("[AUTHENTICATE] Authentication successful")
         return True, user_id, user_info
 
     def clear_user_cache(self, user_id: str) -> None:
