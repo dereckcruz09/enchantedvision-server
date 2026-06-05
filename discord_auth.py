@@ -101,11 +101,17 @@ class DiscordAuth:
         }
 
         try:
+            logger.info(f"Exchanging code for token. Redirect URI: {self.redirect_uri}")
             response = requests.post(TOKEN_URL, data=payload, timeout=10)
+            logger.info(f"Token exchange response status: {response.status_code}")
+            logger.info(f"Token exchange response: {response.text}")
+            
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to exchange code: {e}")
+            logger.error(f"Response status: {response.status_code if 'response' in locals() else 'N/A'}")
+            logger.error(f"Response text: {response.text if 'response' in locals() else 'N/A'}")
             return None
 
     def refresh_access_token(self, refresh_token: str) -> Optional[Dict]:
