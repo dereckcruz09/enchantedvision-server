@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: discord-oauth-auth
+    runtime: python
+    pythonVersion: 3.11
+    
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:10000 --workers 2 --timeout 60 server:app
+    
+    envVars:
+      - key: DISCORD_CLIENT_ID
+        scope: build,runtime
+      - key: DISCORD_CLIENT_SECRET
+        scope: build,runtime
+      - key: REDIRECT_URI
+        scope: build,runtime
+      - key: DISCORD_SERVER_ID
+        scope: build,runtime
+      - key: REQUIRED_ROLES
+        scope: build,runtime
+      - key: SECRET_KEY
+        scope: build,runtime
+      - key: FLASK_DEBUG
+        value: "False"
+        scope: build,runtime
+      - key: HOST
+        value: "0.0.0.0"
+        scope: build,runtime
+      - key: PORT
+        value: "10000"
+        scope: build,runtime
