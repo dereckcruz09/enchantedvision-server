@@ -386,27 +386,38 @@ def callback():
             reason="Failed to authenticate with Discord"
         ), 401
 
-    # Check guild membership
-    access_token = user_info.get("id")  # We'll need the actual access token from discord_auth
-    guilds = discord_auth.get_user_guilds(user_info.get("id"))
-    if not guilds or not any(g["id"] == REQUIRED_GUILD_ID for g in guilds):
-        logger.warning(f"User {user_id} not in required guild")
+    # Get the access token from the cache for API calls
+    access_token = discord_auth.get_cached_token(user_id)
+    if not access_token:
+        logger.error(f"Failed to retrieve cached token for user {user_id}")
         return render_template_string(
             DENIED_TEMPLATE,
-            reason=f"You are not a member of the required Discord server"
-        ), 403
+            reason="Failed to retrieve authentication token"
+        ), 500
 
-    # Check required roles if any
-    if REQUIRED_ROLES:
-        user_roles = discord_auth.get_user_roles_in_guild(
-            user_info.get("id"), REQUIRED_GUILD_ID, user_id
-        )
-        if not user_roles or not any(r in user_roles for r in REQUIRED_ROLES):
-            logger.warning(f"User {user_id} missing required roles")
+    # Check guild membership if required guild is configured
+    if REQUIRED_GUILD_ID:
+        guilds = discord_auth.get_user_guilds(access_token)
+        if not guilds or not any(g["id"] == REQUIRED_GUILD_ID for g in guilds):
+            logger.warning(f"User {user_id} not in required guild {REQUIRED_GUILD_ID}")
             return render_template_string(
                 DENIED_TEMPLATE,
-                reason=f"You don't have the required role(s)"
+                reason=f"You are not a member of the required Discord server"
             ), 403
+
+        # Check required roles if any
+        if REQUIRED_ROLES:
+            user_roles = discord_auth.get_user_roles_in_guild(
+                access_token, REQUIRED_GUILD_ID, user_id
+            )
+            if not user_roles or not any(r in user_roles for r in REQUIRED_ROLES):
+                logger.warning(f"User {user_id} missing required roles. User roles: {user_roles}, Required: {REQUIRED_ROLES}")
+                return render_template_string(
+                    DENIED_TEMPLATE,
+                    reason=f"You don't have the required role(s)"
+                ), 403
+    else:
+        logger.warning("REQUIRED_GUILD_ID not configured - skipping guild membership check")
 
     # Store user in session
     session["user_id"] = user_id
