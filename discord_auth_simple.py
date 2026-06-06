@@ -159,81 +159,79 @@ class DiscordAuthSimple(QDialog):
         self.progress.setVisible(True)
     
     def _start_waiting(self):
-        """Check if authentication is complete"""
+        """Check if authentication is complete by reading temp file"""
         import re
+        import json
+        import os
+        import tempfile
+        from datetime import datetime
+        
         try:
             print("[AuthDialog] Checking authentication status...")
             
-            # Check the current page
-            response = self.session.get(
-                f"{self.server_url}/",
-                timeout=5,
-                allow_redirects=True
-            )
+            # Check temp file for auth token written by Render server
+            token_dir = os.path.join(tempfile.gettempdir(), "enchanted_auth")
+            token_file = os.path.join(token_dir, "current_auth_token.json")
             
-            print(f"[AuthDialog] Page status: {response.status_code}")
-            print(f"[AuthDialog] Page length: {len(response.text)}")
+            print(f"[AuthDialog] Looking for token file: {token_file}")
             
-            # FIRST: Check if page shows "Access Denied"
-            if "Access Denied" in response.text:
-                print("[AuthDialog] ✗ Found Access Denied page")
-                QMessageBox.critical(
-                    self,
-                    "Access Denied",
-                    "You don't have the required role to access this application."
-                )
-                # Close dialog to show access denied
-                self.reject()
-                return
-            
-            # THEN: Check if the page contains "Access Granted!"
-            if "Access Granted" in response.text:
-                print("[AuthDialog] ✓ Found Access Granted page")
-                
-                # Extract token from meta tag
-                token_match = re.search(r'<meta id="auth-token" name="auth-token" content="([^"]+)">', response.text)
-                username_match = re.search(r'Username:\s*(\S+?)\s*<', response.text)
-                user_id_match = re.search(r'User ID:\s*(\d+)', response.text)
-                
-                print(f"[AuthDialog] Token match: {bool(token_match)}")
-                print(f"[AuthDialog] Username match: {username_match}")
-                print(f"[AuthDialog] User ID match: {user_id_match}")
-                
-                if username_match and user_id_match:
-                    user_info = {
-                        "username": username_match.group(1).strip(),
-                        "id": user_id_match.group(1).strip()
-                    }
-                    self.authenticated_user = user_info
-                    self.user_authenticated = True
-                    print(f"[AuthDialog] ✓ Authentication successful: {user_info}")
-                    print("[AuthDialog] Opening GUI...")
-                    self.done(1)  # Return success - this will open GUI
-                    return
-                else:
-                    # Extract what we can
-                    user_info = {
-                        "username": "User",
-                        "id": "authenticated"
-                    }
-                    if username_match:
-                        user_info["username"] = username_match.group(1).strip()
-                    if user_id_match:
-                        user_info["id"] = user_id_match.group(1).strip()
+            if os.path.exists(token_file):
+                print("[AuthDialog] ✓ Token file found!")
+                try:
+                    with open(token_file, 'r') as f:
+                        token_data = json.load(f)
                     
-                    self.authenticated_user = user_info
-                    self.user_authenticated = True
-                    print(f"[AuthDialog] ✓ Authentication successful: {user_info}")
-                    print("[AuthDialog] Opening GUI...")
-                    self.done(1)
-                    return
+                    user_id = token_data.get("user_id")
+                    username = token_data.get("username")
+                    token_time = datetime.fromisoformat(token_data.get("timestamp", datetime.utcnow().isoformat()))
+                    age = (datetime.utcnow() - token_time).total_seconds()
+                    
+                    print(f"[AuthDialog] Token data: user_id={user_id}, username={username}, age={age}s")
+                    
+                    # Check if token is fresh (within 5 minutes)
+                    if age < 300:
+                        print(f"[AuthDialog] ✓ Token is valid")
+                        
+                        # Check via browser if this is Access Granted or Access Denied
+                        response = self.session.get(
+                            f"{self.server_url}/",
+                            timeout=5,
+                            allow_redirects=True
+                        )
+                        
+                        if "Access Denied" in response.text:
+                            print("[AuthDialog] ✗ Server shows Access Denied")
+                            QMessageBox.critical(
+                                self,
+                                "Access Denied",
+                                "You don't have the required role."
+                            )
+                            self.reject()
+                            return
+                        
+                        if "Access Granted" in response.text:
+                            print("[AuthDialog] ✓ Server confirms Access Granted")
+                            self.authenticated_user = {
+                                "username": username,
+                                "id": user_id
+                            }
+                            self.user_authenticated = True
+                            print(f"[AuthDialog] ✓ Authentication successful")
+                            self.done(1)
+                            return
+                    else:
+                        print(f"[AuthDialog] ✗ Token expired ({age}s old)")
+                except Exception as e:
+                    print(f"[AuthDialog] Error reading token file: {e}")
+            else:
+                print("[AuthDialog] ✗ Token file not found")
+                print(f"[AuthDialog] Expected at: {token_file}")
             
-            # Unknown page
-            print("[AuthDialog] ✗ Unknown page content")
+            # Fallback: show error
             QMessageBox.warning(
                 self,
                 "Error",
-                "Could not verify authentication status.\n\nMake sure you completed Discord login in the browser."
+                "No authentication found.\n\nMake sure you logged in via the browser first."
             )
         except Exception as e:
             print(f"[AuthDialog] ✗ Error: {e}")
@@ -242,7 +240,7 @@ class DiscordAuthSimple(QDialog):
             QMessageBox.critical(
                 self,
                 "Error",
-                f"Connection error: {e}\n\nMake sure Render server is online."
+                f"Error: {e}"
             )
     
     def _on_auth_complete(self, success: bool, user_info: dict):

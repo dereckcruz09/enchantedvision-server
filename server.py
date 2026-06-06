@@ -11,6 +11,7 @@ import hmac
 import hashlib
 import json
 import base64
+import tempfile
 from functools import wraps
 from typing import Optional, Dict, Tuple
 from datetime import datetime, timedelta
@@ -313,6 +314,68 @@ def validate_token(f):
 auth_status_cache = {}
 recent_authentications = {}  # Store recent auth results by user IP
 
+# Get a shared temp directory for auth tokens
+AUTH_TOKEN_DIR = os.path.join(tempfile.gettempdir(), "enchanted_auth")
+os.makedirs(AUTH_TOKEN_DIR, exist_ok=True)
+
+def get_auth_token_path() -> str:
+    """Get path to auth token file"""
+    return os.path.join(AUTH_TOKEN_DIR, "current_auth_token.json")
+
+def write_auth_token(user_id: str, username: str, token: str):
+    """Write auth token to temp file so GUI can read it"""
+    try:
+        token_path = get_auth_token_path()
+        token_data = {
+            "user_id": user_id,
+            "username": username,
+            "token": token,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        with open(token_path, 'w') as f:
+            json.dump(token_data, f)
+        logger.info(f"[TOKEN] Written to {token_path}")
+        return True
+    except Exception as e:
+        logger.error(f"[TOKEN] Failed to write: {e}")
+        return False
+
+def read_auth_token() -> Optional[Dict]:
+    """Read auth token from temp file"""
+    try:
+        token_path = get_auth_token_path()
+        if not os.path.exists(token_path):
+            logger.info("[TOKEN] Token file not found")
+            return None
+        
+        with open(token_path, 'r') as f:
+            token_data = json.load(f)
+        
+        # Check if token is still fresh (within 5 minutes)
+        token_time = datetime.fromisoformat(token_data["timestamp"])
+        age = (datetime.utcnow() - token_time).total_seconds()
+        
+        if age > 300:  # 5 minutes
+            logger.info(f"[TOKEN] Token expired ({age}s old)")
+            os.remove(token_path)
+            return None
+        
+        logger.info(f"[TOKEN] Token read successfully, age: {age}s")
+        return token_data
+    except Exception as e:
+        logger.error(f"[TOKEN] Failed to read: {e}")
+        return None
+
+def clear_auth_token():
+    """Delete auth token file"""
+    try:
+        token_path = get_auth_token_path()
+        if os.path.exists(token_path):
+            os.remove(token_path)
+            logger.info("[TOKEN] Token cleared")
+    except Exception as e:
+        logger.error(f"[TOKEN] Failed to clear: {e}")
+
 def create_signed_auth_token(user_id: str, username: str, secret_key: str) -> str:
     """Create an HMAC-signed token that proves authentication"""
     # Create a payload with timestamp
@@ -569,10 +632,12 @@ def callback():
     session["user_id"] = user_id
     session["user_info"] = user_info
 
-    # Generate signed auth token for dialog (self-contained, no server storage needed)
+    # Generate signed auth token for dialog
     auth_token = create_signed_auth_token(user_id, user_info.get("username", "User"), app.secret_key)
     
-    logger.info(f"[CALLBACK] Generated signed token for {user_id}")
+    # Write token to temp file so GUI dialog can read it
+    write_auth_token(user_id, user_info.get("username", "User"), auth_token)
+    
     logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated")
 
     # Store by IP for 30 seconds as fallback
@@ -595,6 +660,9 @@ def logout():
         discord_auth.clear_user_cache(user_id)
         logger.info(f"Logged out user {user_id}")
 
+    # Clear the auth token file
+    clear_auth_token()
+    
     session.clear()
     return redirect("/")
 

@@ -31,7 +31,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "settings.json")
 DISCORD_SERVER_URL = "https://enchantedvision-server-1.onrender.com"
 DISCORD_GUILD_ID = "1474000340448968928"  # Your Discord server ID
 DISCORD_REQUIRED_ROLES = ["1512282657554432000"]  # Required role ID for access
-REQUIRE_DISCORD_AUTH = True  # Set to False to disable Discord auth requirement
+REQUIRE_DISCORD_AUTH = True  # Enable auth checker
 
 # ── Dark Theme Stylesheet ─────────────────────────────────────────────────────
 DARK_STYLESHEET = """
