@@ -307,12 +307,28 @@ def validate_token(f):
 # In-memory auth status cache
 auth_status_cache = {}
 recent_authentications = {}  # Store recent auth results by user IP
+auth_tokens = {}  # Temporary auth tokens for dialog verification
 
 @app.route("/", methods=["GET"])
 def index():
     """Home page - show login or access granted"""
     client_ip = request.remote_addr
     user_id = session.get("user_id")
+    auth_token = request.args.get("auth_token")
+    
+    # Check if auth_token is provided
+    if auth_token and auth_token in auth_tokens:
+        token_data = auth_tokens[auth_token]
+        token_time = datetime.fromisoformat(token_data["timestamp"])
+        
+        # Token valid for 60 seconds
+        if (datetime.utcnow() - token_time).total_seconds() < 60:
+            print(f"[INDEX] Valid auth token from {client_ip}")
+            return render_template_string(
+                SUCCESS_TEMPLATE,
+                username=token_data.get("username", "User"),
+                user_id=token_data.get("user_id", "unknown")
+            )
     
     # First check if user has active session
     if user_id:
@@ -351,7 +367,25 @@ def index():
     return render_template_string(LOGIN_TEMPLATE)
 
 
-@app.route("/get-auth-status", methods=["GET"])
+@app.route("/get-recent-auth-token", methods=["GET"])
+def get_recent_auth_token():
+    """Get the most recent auth token from this IP"""
+    client_ip = request.remote_addr
+    
+    # Look for any valid auth tokens from this IP within the last 60 seconds
+    current_time = datetime.utcnow()
+    for token, token_data in list(auth_tokens.items()):
+        token_time = datetime.fromisoformat(token_data["timestamp"])
+        if (current_time - token_time).total_seconds() < 60:
+            # Return the most recent token
+            return jsonify({
+                "token": token,
+                "user_id": token_data.get("user_id"),
+                "username": token_data.get("username"),
+                "timestamp": token_data.get("timestamp")
+            }), 200
+    
+    return jsonify({"error": "No recent auth token found"}), 401
 def get_auth_status():
     """Get authentication status - always check current session and recent auth"""
     user_id = session.get("user_id")
@@ -499,8 +533,26 @@ def callback():
     session["user_id"] = user_id
     session["user_info"] = user_info
 
-    logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated")
-    return redirect("/")
+    # Generate temporary auth token for dialog
+    auth_token = secrets.token_urlsafe(32)
+    auth_tokens[auth_token] = {
+        "user_id": user_id,
+        "username": user_info.get("username", "User"),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated, token: {auth_token[:20]}...")
+
+    # Store by IP for 30 seconds as fallback
+    recent_authentications[request.remote_addr] = {
+        "authenticated": True,
+        "user_id": user_id,
+        "username": user_info.get("username", "User"),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    # Redirect to page that shows success with auth token embedded
+    return redirect(f"/?auth_token={auth_token}")
 
 
 @app.route("/logout", methods=["GET"])
