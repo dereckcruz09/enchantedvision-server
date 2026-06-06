@@ -7,9 +7,13 @@ Includes a simple web interface for role verification
 import os
 import secrets
 import logging
+import hmac
+import hashlib
+import json
+import base64
 from functools import wraps
 from typing import Optional, Dict, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Flask, request, jsonify, session, redirect, render_template_string
 from dotenv import load_dotenv
@@ -307,7 +311,67 @@ def validate_token(f):
 # In-memory auth status cache
 auth_status_cache = {}
 recent_authentications = {}  # Store recent auth results by user IP
-auth_tokens = {}  # Temporary auth tokens for dialog verification
+
+def create_signed_auth_token(user_id: str, username: str, secret_key: str) -> str:
+    """Create an HMAC-signed token that proves authentication"""
+    # Create a payload with timestamp
+    payload = {
+        "user_id": user_id,
+        "username": username,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    payload_json = json.dumps(payload)
+    payload_b64 = base64.b64encode(payload_json.encode()).decode()
+    
+    # Create HMAC signature
+    signature = hmac.new(
+        secret_key.encode(),
+        payload_b64.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    
+    # Combine payload and signature
+    token = f"{payload_b64}.{signature}"
+    logger.info(f"[AUTH] Created signed token for {user_id}")
+    return token
+
+def verify_signed_auth_token(token: str, secret_key: str) -> Optional[Dict]:
+    """Verify and decode a signed token"""
+    try:
+        if '.' not in token:
+            logger.warning("[AUTH] Invalid token format - no dot")
+            return None
+        
+        payload_b64, signature = token.rsplit('.', 1)
+        
+        # Verify signature
+        expected_signature = hmac.new(
+            secret_key.encode(),
+            payload_b64.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(signature, expected_signature):
+            logger.warning("[AUTH] Invalid token signature")
+            return None
+        
+        # Decode payload
+        payload_json = base64.b64decode(payload_b64).decode()
+        payload = json.loads(payload_json)
+        
+        # Check timestamp (valid for 60 seconds)
+        token_time = datetime.fromisoformat(payload["timestamp"])
+        time_diff = (datetime.utcnow() - token_time).total_seconds()
+        
+        if time_diff > 60:
+            logger.warning(f"[AUTH] Token expired ({time_diff}s old)")
+            return None
+        
+        logger.info(f"[AUTH] Token verified for {payload['user_id']}")
+        return payload
+    except Exception as e:
+        logger.error(f"[AUTH] Token verification failed: {e}")
+        return None
 
 @app.route("/", methods=["GET"])
 def index():
@@ -316,42 +380,26 @@ def index():
     user_id = session.get("user_id")
     auth_token = request.args.get("auth_token")
     
-    print(f"[INDEX] Request from {client_ip}, token: {auth_token[:20] if auth_token else 'None'}...")
-    print(f"[INDEX] Available tokens: {len(auth_tokens)}")
+    print(f"[INDEX] Request from {client_ip}, has token: {bool(auth_token)}")
     
-    # Check if auth_token is provided
+    # Check if signed auth_token is provided
     if auth_token:
-        print(f"[INDEX] Checking token: {auth_token[:20]}...")
-        if auth_token in auth_tokens:
-            token_data = auth_tokens[auth_token]
-            token_time = datetime.fromisoformat(token_data["timestamp"])
-            time_diff = (datetime.utcnow() - token_time).total_seconds()
-            
-            print(f"[INDEX] Token found, age: {time_diff}s")
-            
-            # Token valid for 60 seconds
-            if time_diff < 60:
-                print(f"[INDEX] Valid auth token from {client_ip}")
-                return render_template_string(
-                    SUCCESS_TEMPLATE,
-                    username=token_data.get("username", "User"),
-                    user_id=token_data.get("user_id", "unknown")
-                )
-            else:
-                print(f"[INDEX] Token expired")
+        print(f"[INDEX] Verifying signed token...")
+        token_data = verify_signed_auth_token(auth_token, app.secret_key)
+        
+        if token_data:
+            print(f"[INDEX] ✓ Token verified for {token_data['user_id']}")
+            return render_template_string(
+                SUCCESS_TEMPLATE,
+                username=token_data.get("username", "User"),
+                user_id=token_data.get("user_id", "unknown")
+            )
         else:
-            print(f"[INDEX] Token not found in cache")
+            print(f"[INDEX] ✗ Token verification failed")
     
     # First check if user has active session
     if user_id:
         user_info = session.get("user_info", {})
-        # Store in cache for other requests from this IP
-        recent_authentications[client_ip] = {
-            "authenticated": True,
-            "user_id": user_id,
-            "username": user_info.get("username", "User"),
-            "timestamp": datetime.utcnow().isoformat()
-        }
         print(f"[INDEX] User {user_id} authenticated via session")
         return render_template_string(
             SUCCESS_TEMPLATE,
@@ -359,56 +407,12 @@ def index():
             user_id=user_id
         )
     
-    # Check if there's a recent auth from this IP (within 30 seconds)
-    if client_ip in recent_authentications:
-        auth = recent_authentications[client_ip]
-        auth_time = datetime.fromisoformat(auth["timestamp"])
-        time_diff = (datetime.utcnow() - auth_time).total_seconds()
-        print(f"[INDEX] Recent auth from {client_ip}, age: {time_diff}s")
-        
-        if time_diff < 30:
-            print(f"[INDEX] Showing success page from recent auth for {client_ip}")
-            return render_template_string(
-                SUCCESS_TEMPLATE,
-                username=auth.get("username", "User"),
-                user_id=auth.get("user_id", "unknown")
-            )
-    
     # Not authenticated - show login page
-    print(f"[INDEX] No auth for {client_ip}, showing login page")
+    print(f"[INDEX] No auth, showing login page")
     return render_template_string(LOGIN_TEMPLATE)
 
 
-@app.route("/get-recent-auth-token", methods=["GET"])
-def get_recent_auth_token():
-    """Get the most recent auth token from this IP"""
-    client_ip = request.remote_addr
-    
-    # Look for any valid auth tokens within the last 60 seconds
-    current_time = datetime.utcnow()
-    most_recent_token = None
-    most_recent_age = float('inf')
-    
-    for token, token_data in list(auth_tokens.items()):
-        token_time = datetime.fromisoformat(token_data["timestamp"])
-        age = (current_time - token_time).total_seconds()
-        
-        if age < 60 and age < most_recent_age:
-            most_recent_token = token
-            most_recent_age = age
-    
-    if most_recent_token:
-        token_data = auth_tokens[most_recent_token]
-        print(f"[GET-TOKEN] Returning token age {most_recent_age}s: {most_recent_token[:20]}...")
-        return jsonify({
-            "token": most_recent_token,
-            "user_id": token_data.get("user_id"),
-            "username": token_data.get("username"),
-            "timestamp": token_data.get("timestamp")
-        }), 200
-    
-    print(f"[GET-TOKEN] No recent tokens found (searched {len(auth_tokens)} tokens)")
-    return jsonify({"error": "No recent auth token found"}), 401
+
 def get_auth_status():
     """Get authentication status - always check current session and recent auth"""
     user_id = session.get("user_id")
@@ -556,15 +560,11 @@ def callback():
     session["user_id"] = user_id
     session["user_info"] = user_info
 
-    # Generate temporary auth token for dialog
-    auth_token = secrets.token_urlsafe(32)
-    auth_tokens[auth_token] = {
-        "user_id": user_id,
-        "username": user_info.get("username", "User"),
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    # Generate signed auth token for dialog (self-contained, no server storage needed)
+    auth_token = create_signed_auth_token(user_id, user_info.get("username", "User"), app.secret_key)
     
-    logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated, token: {auth_token[:20]}...")
+    logger.info(f"[CALLBACK] Generated signed token for {user_id}")
+    logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated")
 
     # Store by IP for 30 seconds as fallback
     recent_authentications[request.remote_addr] = {
