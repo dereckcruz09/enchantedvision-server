@@ -159,61 +159,39 @@ class DiscordAuthSimple(QDialog):
         self.progress.setVisible(True)
     
     def _start_waiting(self):
-        """Check if authentication is complete by checking the page"""
-        import re
+        """Check if user authenticated via the auth-status endpoint"""
         try:
-            print("[AuthDialog] Checking authentication...")
+            print("[AuthDialog] Checking authentication status...")
             
-            # Get the page - this will show either success or denied based on browser's auth
             response = self.session.get(
-                f"{self.server_url}/",
+                f"{self.server_url}/auth-status",
                 timeout=5,
-                allow_redirects=True
+                allow_redirects=False
             )
             
-            page_text = response.text
-            print(f"[AuthDialog] Page status: {response.status_code}")
+            print(f"[AuthDialog] Status: {response.status_code}")
             
-            # Check if Access Denied
-            if "Access Denied" in page_text:
-                print("[AuthDialog] ✗ ACCESS DENIED")
-                QMessageBox.critical(
-                    self,
-                    "Access Denied",
-                    "You don't have the required role."
-                )
-                self.reject()
-                return
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("authenticated"):
+                    print(f"[AuthDialog] ✓ Authenticated: {data.get('username')}")
+                    self.authenticated_user = {
+                        "username": data.get("username", "User"),
+                        "id": data.get("user_id", "authenticated")
+                    }
+                    self.user_authenticated = True
+                    self.done(1)  # Open GUI
+                    return
             
-            # Check if Access Granted
-            if "Access Granted" in page_text:
-                print("[AuthDialog] ✓ ACCESS GRANTED")
-                # Extract username and ID
-                username_match = re.search(r'Username:\s*([^\<]+)', page_text)
-                user_id_match = re.search(r'User ID:\s*(\d+)', page_text)
-                
-                if username_match and user_id_match:
-                    username = username_match.group(1).strip()
-                    user_id = user_id_match.group(1).strip()
-                else:
-                    username = "User"
-                    user_id = "authenticated"
-                
-                self.authenticated_user = {"username": username, "id": user_id}
-                self.user_authenticated = True
-                print(f"[AuthDialog] User: {username} (ID: {user_id})")
-                self.done(1)  # Success - open GUI
-                return
-            
-            # If we get here, page is neither granted nor denied (probably login page)
-            print("[AuthDialog] ✗ NO AUTH - showing login page")
+            # Not authenticated
+            print("[AuthDialog] ✗ Not authenticated")
             QMessageBox.warning(
                 self,
                 "Not Authenticated",
-                "Please log in via Discord first in your browser."
+                "Please log in via Discord in the browser first."
             )
         except Exception as e:
-            print(f"[AuthDialog] ERROR: {e}")
+            print(f"[AuthDialog] Error: {e}")
             QMessageBox.critical(self, "Error", f"Error: {e}")
     
     def _on_auth_complete(self, success: bool, user_info: dict):

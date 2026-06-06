@@ -504,6 +504,25 @@ def get_auth_status():
     return jsonify({"error": "Not authenticated", "authenticated": False}), 401
 
 
+@app.route("/auth-status", methods=["GET"])
+def auth_status():
+    """Check auth status - returns simple yes/no based on recent_authentications"""
+    client_ip = request.remote_addr
+    
+    if client_ip in recent_authentications:
+        auth = recent_authentications[client_ip]
+        auth_time = datetime.fromisoformat(auth["timestamp"])
+        # Valid for 5 minutes
+        if (datetime.utcnow() - auth_time).total_seconds() < 300:
+            return jsonify({
+                "authenticated": True,
+                "username": auth.get("username"),
+                "user_id": auth.get("user_id")
+            }), 200
+    
+    return jsonify({"authenticated": False}), 401
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint"""
