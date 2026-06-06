@@ -506,7 +506,7 @@ def get_auth_status():
 
 @app.route("/auth-status", methods=["GET"])
 def auth_status():
-    """Check auth status - returns simple yes/no based on recent_authentications"""
+    """Check auth status - returns granted/denied/pending based on recent_authentications"""
     client_ip = request.remote_addr
     
     if client_ip in recent_authentications:
@@ -514,13 +514,23 @@ def auth_status():
         auth_time = datetime.fromisoformat(auth["timestamp"])
         # Valid for 5 minutes
         if (datetime.utcnow() - auth_time).total_seconds() < 300:
-            return jsonify({
-                "authenticated": True,
-                "username": auth.get("username"),
-                "user_id": auth.get("user_id")
-            }), 200
+            if auth.get("authenticated"):
+                return jsonify({
+                    "authenticated": True,
+                    "username": auth.get("username"),
+                    "user_id": auth.get("user_id")
+                }), 200
+            else:
+                # Access was denied
+                return jsonify({
+                    "authenticated": False,
+                    "denied": True,
+                    "reason": auth.get("reason", "Access denied"),
+                    "username": auth.get("username", "")
+                }), 403
     
-    return jsonify({"authenticated": False}), 401
+    # No auth attempt yet (still pending)
+    return jsonify({"authenticated": False, "denied": False}), 401
 
 
 @app.route("/health", methods=["GET"])
@@ -610,6 +620,14 @@ def callback():
         guilds = discord_auth.get_user_guilds(access_token)
         if not guilds or not any(g["id"] == REQUIRED_GUILD_ID for g in guilds):
             logger.warning(f"User {user_id} not in required guild {REQUIRED_GUILD_ID}")
+            # Store denial by IP so GUI can detect it
+            recent_authentications[request.remote_addr] = {
+                "authenticated": False,
+                "reason": "You are not a member of the required Discord server",
+                "username": user_info.get("username", "User"),
+                "user_id": user_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
             return render_template_string(
                 DENIED_TEMPLATE,
                 reason=f"You are not a member of the required Discord server"
@@ -624,6 +642,14 @@ def callback():
             logger.info(f"[CALLBACK] User {user_id} roles from API: {user_roles}")
             if not user_roles or not any(r in user_roles for r in REQUIRED_ROLES):
                 logger.warning(f"User {user_id} missing required roles. User roles: {user_roles}, Required: {REQUIRED_ROLES}")
+                # Store denial by IP so GUI can detect it
+                recent_authentications[request.remote_addr] = {
+                    "authenticated": False,
+                    "reason": "You don't have the required role(s)",
+                    "username": user_info.get("username", "User"),
+                    "user_id": user_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
                 return render_template_string(
                     DENIED_TEMPLATE,
                     reason=f"You don't have the required role(s)"
