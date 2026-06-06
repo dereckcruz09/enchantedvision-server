@@ -130,7 +130,6 @@ SUCCESS_TEMPLATE = """
 <html>
 <head>
     <title>Access Granted ✓</title>
-    <meta id="auth-token" name="auth-token" content="{{ token }}">
     <style>
         body {
             margin: 0;
@@ -447,13 +446,10 @@ def index():
         
         if token_data:
             print(f"[INDEX] ✓ Token verified for {token_data['user_id']}")
-            # Generate a fresh token for the response
-            fresh_token = create_signed_auth_token(token_data['user_id'], token_data.get('username', 'User'), app.secret_key)
             return render_template_string(
                 SUCCESS_TEMPLATE,
                 username=token_data.get("username", "User"),
-                user_id=token_data.get("user_id", "unknown"),
-                token=fresh_token
+                user_id=token_data.get("user_id", "unknown")
             )
         else:
             print(f"[INDEX] ✗ Token verification failed")
@@ -462,15 +458,10 @@ def index():
     if user_id:
         user_info = session.get("user_info", {})
         print(f"[INDEX] User {user_id} authenticated via session")
-        
-        # Generate a fresh token for this request
-        auth_token = create_signed_auth_token(user_id, user_info.get("username", "User"), app.secret_key)
-        
         return render_template_string(
             SUCCESS_TEMPLATE,
             username=user_info.get("username", "User"),
-            user_id=user_id,
-            token=auth_token
+            user_id=user_id
         )
     
     # Not authenticated - show login page
