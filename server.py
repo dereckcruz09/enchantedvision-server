@@ -312,6 +312,14 @@ def validate_token(f):
 auth_status_cache = {}
 recent_authentications = {}  # Store recent auth results by user IP
 
+def get_client_ip():
+    """Get real client IP, handling Render's reverse proxy (X-Forwarded-For)"""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        # X-Forwarded-For can be "client, proxy1, proxy2" — first is the real IP
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr
+
 def create_signed_auth_token(user_id: str, username: str, secret_key: str) -> str:
     """Create an HMAC-signed token that proves authentication"""
     # Create a payload with timestamp
@@ -433,7 +441,7 @@ def verify_signed_auth_token(token: str, secret_key: str) -> Optional[Dict]:
 @app.route("/", methods=["GET"])
 def index():
     """Home page - show login or access granted"""
-    client_ip = request.remote_addr
+    client_ip = get_client_ip()
     user_id = session.get("user_id")
     auth_token = request.args.get("auth_token")
     
@@ -474,7 +482,7 @@ def get_auth_status():
     """Get authentication status - always check current session and recent auth"""
     user_id = session.get("user_id")
     user_info = session.get("user_info", {})
-    client_ip = request.remote_addr
+    client_ip = get_client_ip()
     
     # First check if user has active session
     if user_id and user_info:
@@ -507,7 +515,7 @@ def get_auth_status():
 @app.route("/auth-status", methods=["GET"])
 def auth_status():
     """Check auth status - returns granted/denied/pending based on recent_authentications"""
-    client_ip = request.remote_addr
+    client_ip = get_client_ip()
     
     if client_ip in recent_authentications:
         auth = recent_authentications[client_ip]
@@ -621,7 +629,7 @@ def callback():
         if not guilds or not any(g["id"] == REQUIRED_GUILD_ID for g in guilds):
             logger.warning(f"User {user_id} not in required guild {REQUIRED_GUILD_ID}")
             # Store denial by IP so GUI can detect it
-            recent_authentications[request.remote_addr] = {
+            recent_authentications[get_client_ip()] = {
                 "authenticated": False,
                 "reason": "You are not a member of the required Discord server",
                 "username": user_info.get("username", "User"),
@@ -643,7 +651,7 @@ def callback():
             if not user_roles or not any(r in user_roles for r in REQUIRED_ROLES):
                 logger.warning(f"User {user_id} missing required roles. User roles: {user_roles}, Required: {REQUIRED_ROLES}")
                 # Store denial by IP so GUI can detect it
-                recent_authentications[request.remote_addr] = {
+                recent_authentications[get_client_ip()] = {
                     "authenticated": False,
                     "reason": "You don't have the required role(s)",
                     "username": user_info.get("username", "User"),
@@ -664,8 +672,8 @@ def callback():
 
     logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated")
 
-    # Store by IP for 30 seconds as fallback
-    recent_authentications[request.remote_addr] = {
+    # Store by IP so GUI can detect auth result
+    recent_authentications[get_client_ip()] = {
         "authenticated": True,
         "user_id": user_id,
         "username": user_info.get("username", "User"),
