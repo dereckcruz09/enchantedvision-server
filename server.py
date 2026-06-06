@@ -333,6 +333,63 @@ def create_signed_auth_token(user_id: str, username: str, secret_key: str) -> st
     
     # Combine payload and signature
     token = f"{payload_b64}.{signature}"
+    return token
+
+def verify_signed_auth_token(token: str, secret_key: str) -> Optional[Dict]:
+    """Verify and decode a signed token"""
+    try:
+        if '.' not in token:
+            return None
+        
+        payload_b64, signature = token.rsplit('.', 1)
+        
+        # Verify signature
+        expected_signature = hmac.new(
+            secret_key.encode(),
+            payload_b64.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(signature, expected_signature):
+            return None
+        
+        # Decode payload
+        payload_json = base64.b64decode(payload_b64).decode()
+        payload = json.loads(payload_json)
+        
+        # Check timestamp (valid for 60 seconds)
+        token_time = datetime.fromisoformat(payload["timestamp"])
+        time_diff = (datetime.utcnow() - token_time).total_seconds()
+        
+        if time_diff > 60:
+            return None
+        
+        logger.info(f"[AUTH] Token verified for {payload['user_id']}")
+        return payload
+    except Exception as e:
+        logger.error(f"[AUTH] Token verification failed: {e}")
+        return None
+
+def create_signed_auth_token(user_id: str, username: str, secret_key: str) -> str:
+    """Create an HMAC-signed token that proves authentication"""
+    # Create a payload with timestamp
+    payload = {
+        "user_id": user_id,
+        "username": username,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    payload_json = json.dumps(payload)
+    payload_b64 = base64.b64encode(payload_json.encode()).decode()
+    
+    # Create HMAC signature
+    signature = hmac.new(
+        secret_key.encode(),
+        payload_b64.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    
+    # Combine payload and signature
+    token = f"{payload_b64}.{signature}"
     logger.info(f"[AUTH] Created signed token for {user_id}")
     return token
 
