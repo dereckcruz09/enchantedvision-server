@@ -316,19 +316,31 @@ def index():
     user_id = session.get("user_id")
     auth_token = request.args.get("auth_token")
     
+    print(f"[INDEX] Request from {client_ip}, token: {auth_token[:20] if auth_token else 'None'}...")
+    print(f"[INDEX] Available tokens: {len(auth_tokens)}")
+    
     # Check if auth_token is provided
-    if auth_token and auth_token in auth_tokens:
-        token_data = auth_tokens[auth_token]
-        token_time = datetime.fromisoformat(token_data["timestamp"])
-        
-        # Token valid for 60 seconds
-        if (datetime.utcnow() - token_time).total_seconds() < 60:
-            print(f"[INDEX] Valid auth token from {client_ip}")
-            return render_template_string(
-                SUCCESS_TEMPLATE,
-                username=token_data.get("username", "User"),
-                user_id=token_data.get("user_id", "unknown")
-            )
+    if auth_token:
+        print(f"[INDEX] Checking token: {auth_token[:20]}...")
+        if auth_token in auth_tokens:
+            token_data = auth_tokens[auth_token]
+            token_time = datetime.fromisoformat(token_data["timestamp"])
+            time_diff = (datetime.utcnow() - token_time).total_seconds()
+            
+            print(f"[INDEX] Token found, age: {time_diff}s")
+            
+            # Token valid for 60 seconds
+            if time_diff < 60:
+                print(f"[INDEX] Valid auth token from {client_ip}")
+                return render_template_string(
+                    SUCCESS_TEMPLATE,
+                    username=token_data.get("username", "User"),
+                    user_id=token_data.get("user_id", "unknown")
+                )
+            else:
+                print(f"[INDEX] Token expired")
+        else:
+            print(f"[INDEX] Token not found in cache")
     
     # First check if user has active session
     if user_id:
@@ -372,19 +384,30 @@ def get_recent_auth_token():
     """Get the most recent auth token from this IP"""
     client_ip = request.remote_addr
     
-    # Look for any valid auth tokens from this IP within the last 60 seconds
+    # Look for any valid auth tokens within the last 60 seconds
     current_time = datetime.utcnow()
+    most_recent_token = None
+    most_recent_age = float('inf')
+    
     for token, token_data in list(auth_tokens.items()):
         token_time = datetime.fromisoformat(token_data["timestamp"])
-        if (current_time - token_time).total_seconds() < 60:
-            # Return the most recent token
-            return jsonify({
-                "token": token,
-                "user_id": token_data.get("user_id"),
-                "username": token_data.get("username"),
-                "timestamp": token_data.get("timestamp")
-            }), 200
+        age = (current_time - token_time).total_seconds()
+        
+        if age < 60 and age < most_recent_age:
+            most_recent_token = token
+            most_recent_age = age
     
+    if most_recent_token:
+        token_data = auth_tokens[most_recent_token]
+        print(f"[GET-TOKEN] Returning token age {most_recent_age}s: {most_recent_token[:20]}...")
+        return jsonify({
+            "token": most_recent_token,
+            "user_id": token_data.get("user_id"),
+            "username": token_data.get("username"),
+            "timestamp": token_data.get("timestamp")
+        }), 200
+    
+    print(f"[GET-TOKEN] No recent tokens found (searched {len(auth_tokens)} tokens)")
     return jsonify({"error": "No recent auth token found"}), 401
 def get_auth_status():
     """Get authentication status - always check current session and recent auth"""
