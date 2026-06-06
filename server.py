@@ -193,8 +193,8 @@ SUCCESS_TEMPLATE = """
         <h1>Access Granted!</h1>
         <p>You have been verified successfully.</p>
         <div class="user-info">
-            <p><strong>Username:</strong> {{ username }}</p>
-            <p><strong>User ID:</strong> {{ user_id }}</p>
+            <p>Username: {{ username }}</p>
+            <p>User ID: {{ user_id }}</p>
         </div>
         <p style="color: #888; font-size: 14px;">You have access to this application.</p>
         <a href="/logout" class="btn">Logout</a>
@@ -306,51 +306,84 @@ def validate_token(f):
 
 # In-memory auth status cache
 auth_status_cache = {}
+recent_authentications = {}  # Store recent auth results by user IP
 
 @app.route("/", methods=["GET"])
 def index():
     """Home page - show login or access granted"""
+    client_ip = request.remote_addr
     user_id = session.get("user_id")
     
+    # First check if user has active session
     if user_id:
-        # Store in cache for GUI to retrieve
-        auth_status_cache[user_id] = {
+        user_info = session.get("user_info", {})
+        # Store in cache for other requests from this IP
+        recent_authentications[client_ip] = {
             "authenticated": True,
             "user_id": user_id,
-            "username": session.get("user_info", {}).get("username", "User"),
+            "username": user_info.get("username", "User"),
             "timestamp": datetime.utcnow().isoformat()
         }
-        
-        # Already authenticated
-        user_info = session.get("user_info", {})
+        print(f"[INDEX] User {user_id} authenticated via session")
         return render_template_string(
             SUCCESS_TEMPLATE,
             username=user_info.get("username", "User"),
             user_id=user_id
         )
     
-    # Not authenticated - clear cache
-    auth_status_cache.clear()
+    # Check if there's a recent auth from this IP (within 30 seconds)
+    if client_ip in recent_authentications:
+        auth = recent_authentications[client_ip]
+        auth_time = datetime.fromisoformat(auth["timestamp"])
+        time_diff = (datetime.utcnow() - auth_time).total_seconds()
+        print(f"[INDEX] Recent auth from {client_ip}, age: {time_diff}s")
+        
+        if time_diff < 30:
+            print(f"[INDEX] Showing success page from recent auth for {client_ip}")
+            return render_template_string(
+                SUCCESS_TEMPLATE,
+                username=auth.get("username", "User"),
+                user_id=auth.get("user_id", "unknown")
+            )
+    
+    # Not authenticated - show login page
+    print(f"[INDEX] No auth for {client_ip}, showing login page")
     return render_template_string(LOGIN_TEMPLATE)
 
 
 @app.route("/get-auth-status", methods=["GET"])
 def get_auth_status():
-    """Get authentication status - always check current session"""
+    """Get authentication status - always check current session and recent auth"""
     user_id = session.get("user_id")
     user_info = session.get("user_info", {})
+    client_ip = request.remote_addr
     
+    # First check if user has active session
     if user_id and user_info:
         # User has active session
         return jsonify({
             "authenticated": True,
             "user_id": user_id,
             "username": user_info.get("username", "User"),
+            "source": "session",
             "timestamp": datetime.utcnow().isoformat()
         }), 200
-    else:
-        # No active session
-        return jsonify({"error": "Not authenticated"}), 401
+    
+    # Check if there's a recent auth from this IP (within 30 seconds)
+    if client_ip in recent_authentications:
+        auth = recent_authentications[client_ip]
+        auth_time = datetime.fromisoformat(auth["timestamp"])
+        if (datetime.utcnow() - auth_time).total_seconds() < 30:
+            return jsonify({
+                "authenticated": True,
+                "user_id": auth.get("user_id", "unknown"),
+                "username": auth.get("username", "User"),
+                "source": "recent",
+                "timestamp": auth.get("timestamp")
+            }), 200
+    
+    # No active session and no recent auth
+    return jsonify({"error": "Not authenticated", "authenticated": False}), 401
 
 
 @app.route("/health", methods=["GET"])
