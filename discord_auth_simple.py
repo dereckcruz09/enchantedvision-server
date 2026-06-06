@@ -164,33 +164,38 @@ class DiscordAuthSimple(QDialog):
         try:
             print("[AuthDialog] Checking authentication status...")
             
-            # Simply check the current page directly (no token endpoint needed anymore)
+            # Check the current page
             response = self.session.get(
                 f"{self.server_url}/",
                 timeout=5,
-                allow_redirects=False
+                allow_redirects=True
             )
             
-            print(f"[AuthDialog] HTML page status: {response.status_code}")
+            print(f"[AuthDialog] Page status: {response.status_code}")
+            print(f"[AuthDialog] Page length: {len(response.text)}")
             
             # FIRST: Check if page shows "Access Denied"
             if "Access Denied" in response.text:
-                print("[AuthDialog] Found Access Denied page")
-                QMessageBox.warning(
+                print("[AuthDialog] ✗ Found Access Denied page")
+                QMessageBox.critical(
                     self,
                     "Access Denied",
-                    "You don't have the required role."
+                    "You don't have the required role to access this application."
                 )
+                # Close dialog to show access denied
+                self.reject()
                 return
             
             # THEN: Check if the page contains "Access Granted!"
             if "Access Granted" in response.text:
-                print("[AuthDialog] Found Access Granted page")
+                print("[AuthDialog] ✓ Found Access Granted page")
                 
-                # Extract username and user ID with fixed regex to not include closing tag
+                # Extract token from meta tag
+                token_match = re.search(r'<meta id="auth-token" name="auth-token" content="([^"]+)">', response.text)
                 username_match = re.search(r'Username:\s*(\S+?)\s*<', response.text)
                 user_id_match = re.search(r'User ID:\s*(\d+)', response.text)
                 
+                print(f"[AuthDialog] Token match: {bool(token_match)}")
                 print(f"[AuthDialog] Username match: {username_match}")
                 print(f"[AuthDialog] User ID match: {user_id_match}")
                 
@@ -201,36 +206,43 @@ class DiscordAuthSimple(QDialog):
                     }
                     self.authenticated_user = user_info
                     self.user_authenticated = True
-                    print(f"[AuthDialog] Authentication successful: {user_info}")
-                    self.done(1)
+                    print(f"[AuthDialog] ✓ Authentication successful: {user_info}")
+                    print("[AuthDialog] Opening GUI...")
+                    self.done(1)  # Return success - this will open GUI
                     return
                 else:
-                    # Found "Access Granted!" but couldn't extract - accept anyway
-                    print("[AuthDialog] Found Access Granted but couldn't extract username/ID - accepting anyway")
+                    # Extract what we can
                     user_info = {
                         "username": "User",
                         "id": "authenticated"
                     }
+                    if username_match:
+                        user_info["username"] = username_match.group(1).strip()
+                    if user_id_match:
+                        user_info["id"] = user_id_match.group(1).strip()
+                    
                     self.authenticated_user = user_info
                     self.user_authenticated = True
+                    print(f"[AuthDialog] ✓ Authentication successful: {user_info}")
+                    print("[AuthDialog] Opening GUI...")
                     self.done(1)
                     return
             
             # Unknown page
-            print("[AuthDialog] Unknown page content")
+            print("[AuthDialog] ✗ Unknown page content")
             QMessageBox.warning(
                 self,
                 "Error",
-                "Could not verify authentication status.\n\nMake sure you completed Discord login."
+                "Could not verify authentication status.\n\nMake sure you completed Discord login in the browser."
             )
         except Exception as e:
-            print(f"[AuthDialog] Error: {e}")
+            print(f"[AuthDialog] ✗ Error: {e}")
             import traceback
             traceback.print_exc()
-            QMessageBox.warning(
+            QMessageBox.critical(
                 self,
                 "Error",
-                f"Error: {e}"
+                f"Connection error: {e}\n\nMake sure Render server is online."
             )
     
     def _on_auth_complete(self, success: bool, user_info: dict):
