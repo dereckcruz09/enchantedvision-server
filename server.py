@@ -627,8 +627,8 @@ def callback():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-    # Redirect to page that shows success with auth token embedded
-    return redirect(f"/?auth_token={auth_token}")
+    # Redirect to home page
+    return redirect("/")
 
 
 @app.route("/logout", methods=["GET"])
