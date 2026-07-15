@@ -37,8 +37,20 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:5000/callback")
 REQUIRED_GUILD_ID = os.getenv("DISCORD_SERVER_ID")
-REQUIRED_ROLES = os.getenv("DISCORD_REQUIRED_ROLES", "").split(",")
-REQUIRED_ROLES = [r.strip() for r in REQUIRED_ROLES if r.strip()]
+def _parse_roles(env_name):
+    return [r.strip() for r in os.getenv(env_name, "").split(",") if r.strip()]
+
+# Per-app required roles. Each client says which app it is via /login?app=...
+# "titan" (default) keeps using the original DISCORD_REQUIRED_ROLES env var so
+# existing clients that send no ?app= keep working unchanged. "remote" uses a
+# new DISCORD_REQUIRED_ROLES_REMOTE env var.
+ROLE_SETS = {
+    "titan":  _parse_roles("DISCORD_REQUIRED_ROLES"),
+    "remote": _parse_roles("DISCORD_REQUIRED_ROLES_REMOTE"),
+}
+DEFAULT_APP = "titan"
+# Backward-compat alias: the generic /check-* endpoints still use REQUIRED_ROLES.
+REQUIRED_ROLES = ROLE_SETS[DEFAULT_APP]
 
 logger.info(f"=== DISCORD AUTH CONFIG ===")
 logger.info(f"CLIENT_ID: {DISCORD_CLIENT_ID}")
@@ -567,6 +579,12 @@ def test_discord():
 @app.route("/login", methods=["GET"])
 def login():
     """Initiate OAuth2 login flow"""
+    # Which app is logging in? Determines which role(s) we require in /callback.
+    app_key = (request.args.get("app") or DEFAULT_APP).strip().lower()
+    if app_key not in ROLE_SETS:
+        app_key = DEFAULT_APP
+    session["app"] = app_key
+
     state = secrets.token_urlsafe(32)
     session["oauth_state"] = state
 
@@ -641,15 +659,19 @@ def callback():
                 reason=f"You are not a member of the required Discord server"
             ), 403
 
+        # Per-app required roles — determined by ?app= at /login time.
+        app_key = session.get("app", DEFAULT_APP)
+        required_roles = ROLE_SETS.get(app_key, ROLE_SETS[DEFAULT_APP])
+
         # Check required roles if any
-        if REQUIRED_ROLES:
-            logger.info(f"[CALLBACK] Checking required roles: {REQUIRED_ROLES}")
+        if required_roles:
+            logger.info(f"[CALLBACK] app={app_key} checking required roles: {required_roles}")
             user_roles = discord_auth.get_user_roles_in_guild(
                 access_token, REQUIRED_GUILD_ID, user_id
             )
             logger.info(f"[CALLBACK] User {user_id} roles from API: {user_roles}")
-            if not user_roles or not any(r in user_roles for r in REQUIRED_ROLES):
-                logger.warning(f"User {user_id} missing required roles. User roles: {user_roles}, Required: {REQUIRED_ROLES}")
+            if not user_roles or not any(r in user_roles for r in required_roles):
+                logger.warning(f"User {user_id} missing required roles. User roles: {user_roles}, Required: {required_roles}")
                 # Store denial by IP so GUI can detect it
                 recent_authentications[get_client_ip()] = {
                     "authenticated": False,
@@ -664,7 +686,7 @@ def callback():
                 ), 403
             logger.info(f"[CALLBACK] User {user_id} has all required roles")
         else:
-            logger.warning("[CALLBACK] REQUIRED_ROLES is empty - skipping role check")
+            logger.warning(f"[CALLBACK] No required roles configured for app={app_key} - skipping role check")
 
     # Store user in session
     session["user_id"] = user_id

@@ -16,7 +16,9 @@ services:
         scope: build,runtime
       - key: DISCORD_SERVER_ID
         scope: build,runtime
-      - key: REQUIRED_ROLES
+      - key: DISCORD_REQUIRED_ROLES
+        scope: build,runtime
+      - key: DISCORD_REQUIRED_ROLES_REMOTE
         scope: build,runtime
       - key: SECRET_KEY
         scope: build,runtime
