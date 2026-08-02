@@ -44,9 +44,17 @@ def _parse_roles(env_name):
 # "titan" (default) keeps using the original DISCORD_REQUIRED_ROLES env var so
 # existing clients that send no ?app= keep working unchanged. "remote" uses a
 # new DISCORD_REQUIRED_ROLES_REMOTE env var.
+#
+# "zero" is Enchanted Zero. Its role is hardcoded as a fallback so the app works
+# before DISCORD_REQUIRED_ROLES_ZERO is set on the service; the env var wins when
+# present, so the role can be rotated without a redeploy. Role IDs are not
+# secrets - they are visible to anyone in the Discord server.
+ZERO_ROLE_FALLBACK = ["1533536305064185927"]
+
 ROLE_SETS = {
     "titan":  _parse_roles("DISCORD_REQUIRED_ROLES"),
     "remote": _parse_roles("DISCORD_REQUIRED_ROLES_REMOTE"),
+    "zero":   _parse_roles("DISCORD_REQUIRED_ROLES_ZERO") or ZERO_ROLE_FALLBACK,
 }
 DEFAULT_APP = "titan"
 # Backward-compat alias: the generic /check-* endpoints still use REQUIRED_ROLES.
@@ -59,6 +67,9 @@ logger.info(f"REDIRECT_URI: {DISCORD_REDIRECT_URI}")
 logger.info(f"REQUIRED_GUILD_ID: {REQUIRED_GUILD_ID}")
 logger.info(f"REQUIRED_ROLES (raw): {os.getenv('DISCORD_REQUIRED_ROLES')}")
 logger.info(f"REQUIRED_ROLES (parsed): {REQUIRED_ROLES}")
+for _app_name, _app_roles in ROLE_SETS.items():
+    logger.info(f"ROLE_SET '{_app_name}': {_app_roles or '(none configured)'}")
+logger.info(f"DEFAULT_APP: {DEFAULT_APP}")
 logger.info(f"=== END CONFIG ===")
 
 if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
@@ -528,9 +539,21 @@ def get_auth_status():
 def auth_status():
     """Check auth status - returns granted/denied/pending based on recent_authentications"""
     client_ip = get_client_ip()
-    
+
+    # Which app is asking. Results are only reported back to the app they were
+    # recorded for, otherwise authenticating for one app would satisfy another
+    # app's client polling from the same machine - each app requires a
+    # different role, so that would bypass the role check.
+    requested_app = (request.args.get("app") or DEFAULT_APP).strip().lower()
+    if requested_app not in ROLE_SETS:
+        requested_app = DEFAULT_APP
+
     if client_ip in recent_authentications:
         auth = recent_authentications[client_ip]
+
+        if auth.get("app", DEFAULT_APP) != requested_app:
+            return jsonify({"authenticated": False, "denied": False}), 401
+
         auth_time = datetime.fromisoformat(auth["timestamp"])
         # Valid for 5 minutes
         if (datetime.utcnow() - auth_time).total_seconds() < 300:
@@ -641,6 +664,11 @@ def callback():
             reason="Failed to retrieve authentication token"
         ), 500
 
+    # Which app this login was started for, set by /login?app=. Resolved before
+    # any result is recorded, so every record below is tagged with it and
+    # /auth-status only reports it back to that app's client.
+    app_key = session.get("app", DEFAULT_APP)
+
     # Check guild membership if required guild is configured
     if REQUIRED_GUILD_ID:
         guilds = discord_auth.get_user_guilds(access_token)
@@ -652,6 +680,7 @@ def callback():
                 "reason": "You are not a member of the required Discord server",
                 "username": user_info.get("username", "User"),
                 "user_id": user_id,
+                "app": app_key,
                 "timestamp": datetime.utcnow().isoformat()
             }
             return render_template_string(
@@ -660,7 +689,6 @@ def callback():
             ), 403
 
         # Per-app required roles — determined by ?app= at /login time.
-        app_key = session.get("app", DEFAULT_APP)
         required_roles = ROLE_SETS.get(app_key, ROLE_SETS[DEFAULT_APP])
 
         # Check required roles if any
@@ -678,6 +706,7 @@ def callback():
                     "reason": "You don't have the required role(s)",
                     "username": user_info.get("username", "User"),
                     "user_id": user_id,
+                    "app": app_key,
                     "timestamp": datetime.utcnow().isoformat()
                 }
                 return render_template_string(
@@ -692,13 +721,14 @@ def callback():
     session["user_id"] = user_id
     session["user_info"] = user_info
 
-    logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated")
+    logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated for app={app_key}")
 
     # Store by IP so GUI can detect auth result
     recent_authentications[get_client_ip()] = {
         "authenticated": True,
         "user_id": user_id,
         "username": user_info.get("username", "User"),
+        "app": app_key,
         "timestamp": datetime.utcnow().isoformat()
     }
 
