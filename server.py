@@ -343,6 +343,177 @@ def get_client_ip():
         return forwarded.split(",")[0].strip()
     return request.remote_addr
 
+
+# ── Device bind / one session / security log (app=zero and any client sending mid)
+_DATA_DIR = os.getenv("DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
+_BINDS_PATH = os.path.join(_DATA_DIR, "device_binds.json")
+_EVENTS_PATH = os.path.join(_DATA_DIR, "auth_events.jsonl")
+_LIVE_TTL = 90  # seconds; heartbeat is ~40s so a crash can relogin after this
+_device_binds = {}
+_live_sessions = {}
+
+try:
+    import threading as _threading
+    _DEV_LOCK = _threading.Lock()
+except Exception:
+    _DEV_LOCK = None
+
+
+def _dev_lock():
+    if _DEV_LOCK:
+        return _DEV_LOCK
+    class _N:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    return _N()
+
+
+def _load_binds():
+    global _device_binds
+    try:
+        with open(_BINDS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _device_binds = data
+    except Exception:
+        _device_binds = {}
+
+
+def _save_binds():
+    try:
+        os.makedirs(_DATA_DIR, exist_ok=True)
+        tmp = _BINDS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_device_binds, f, indent=2)
+        os.replace(tmp, _BINDS_PATH)
+    except Exception as exc:
+        logger.warning("Could not save device binds: %s", exc)
+
+
+def _log_event(kind, **fields):
+    rec = {"ts": datetime.utcnow().isoformat(), "event": kind}
+    rec.update(fields)
+    logger.info("[SEC] %s", rec)
+    try:
+        os.makedirs(_DATA_DIR, exist_ok=True)
+        with open(_EVENTS_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
+def _req_mid():
+    return (request.headers.get("X-Machine-Id") or request.args.get("mid") or "").strip()[:64]
+
+
+def _req_uid():
+    return (request.headers.get("X-User-Id") or request.args.get("user_id") or "").strip()[:80]
+
+
+def _req_session():
+    return (request.headers.get("X-Session") or request.args.get("session") or "").strip()[:80]
+
+
+def _bind_key(app_key, user_id):
+    return "%s:%s" % (app_key, user_id)
+
+
+_load_binds()
+
+
+def _claim_device(app_key, user_id, mid, username, ip):
+    """First machine wins. Other PCs are denied. Same PC refreshes the live session."""
+    if not user_id or not mid:
+        return False, "Missing device id", None
+    key = _bind_key(app_key, user_id)
+    now = datetime.utcnow()
+    with _dev_lock():
+        bound = _device_binds.get(key)
+        if bound and bound.get("mid") and bound.get("mid") != mid:
+            _log_event(
+                "deny_bind",
+                app=app_key, user_id=user_id, username=username,
+                mid=mid, bound_mid=bound.get("mid"), ip=ip,
+            )
+            return False, "This account is locked to another PC", None
+        if not bound:
+            _device_binds[key] = {
+                "mid": mid,
+                "username": username or "",
+                "bound_at": now.isoformat(),
+                "app": app_key,
+            }
+            _save_binds()
+            _log_event("bind", app=app_key, user_id=user_id, username=username, mid=mid, ip=ip)
+
+        live = _live_sessions.get(key)
+        if live:
+            age = (now - datetime.fromisoformat(live["last_seen"])).total_seconds()
+            if live.get("mid") != mid and age < _LIVE_TTL:
+                _log_event(
+                    "deny_session",
+                    app=app_key, user_id=user_id, username=username,
+                    mid=mid, other_mid=live.get("mid"), ip=ip,
+                )
+                return False, "Already signed in on another session", None
+            if live.get("mid") == mid and live.get("sid"):
+                live["last_seen"] = now.isoformat()
+                live["ip"] = ip
+                _log_event("login", app=app_key, user_id=user_id, username=username, mid=mid, ip=ip)
+                return True, "", live["sid"]
+
+        sid = secrets.token_urlsafe(24)
+        _live_sessions[key] = {
+            "sid": sid,
+            "mid": mid,
+            "last_seen": now.isoformat(),
+            "ip": ip,
+        }
+        _log_event("login", app=app_key, user_id=user_id, username=username, mid=mid, ip=ip)
+        return True, "", sid
+
+
+def _heartbeat_device(app_key, user_id, mid, sid, ip):
+    key = _bind_key(app_key, user_id)
+    now = datetime.utcnow()
+    with _dev_lock():
+        bound = _device_binds.get(key)
+        if not bound or not bound.get("mid"):
+            return False, "Sign in again", None
+        if bound.get("mid") != mid:
+            _log_event(
+                "deny_bind",
+                app=app_key, user_id=user_id, mid=mid,
+                bound_mid=bound.get("mid"), ip=ip, via="heartbeat",
+            )
+            return False, "This account is locked to another PC", None
+
+        live = _live_sessions.get(key)
+        if live and live.get("mid") == mid:
+            keep = sid if sid and sid == live.get("sid") else (live.get("sid") or sid)
+            if not keep:
+                keep = secrets.token_urlsafe(24)
+            live["sid"] = keep
+            live["last_seen"] = now.isoformat()
+            live["ip"] = ip
+            return True, "", keep
+        if live and live.get("sid") and sid and live.get("sid") != sid:
+            age = (now - datetime.fromisoformat(live["last_seen"])).total_seconds()
+            if age < _LIVE_TTL:
+                _log_event(
+                    "deny_session",
+                    app=app_key, user_id=user_id, mid=mid, ip=ip, via="heartbeat",
+                )
+                return False, "Already signed in on another session", None
+        keep = sid or secrets.token_urlsafe(24)
+        _live_sessions[key] = {
+            "sid": keep,
+            "mid": mid,
+            "last_seen": now.isoformat(),
+            "ip": ip,
+        }
+        return True, "", keep
+
 def create_signed_auth_token(user_id: str, username: str, secret_key: str) -> str:
     """Create an HMAC-signed token that proves authentication"""
     # Create a payload with timestamp
@@ -540,13 +711,28 @@ def auth_status():
     """Check auth status - returns granted/denied/pending based on recent_authentications"""
     client_ip = get_client_ip()
 
-    # Which app is asking. Results are only reported back to the app they were
-    # recorded for, otherwise authenticating for one app would satisfy another
-    # app's client polling from the same machine - each app requires a
-    # different role, so that would bypass the role check.
     requested_app = (request.args.get("app") or DEFAULT_APP).strip().lower()
     if requested_app not in ROLE_SETS:
         requested_app = DEFAULT_APP
+
+    mid = _req_mid()
+    uid_hdr = _req_uid()
+    sess = _req_session()
+
+    # Heartbeat from a compiled client that already has a user id + machine id.
+    if uid_hdr and mid:
+        ok, reason, sid = _heartbeat_device(requested_app, uid_hdr, mid, sess, client_ip)
+        if not ok:
+            return jsonify({
+                "authenticated": False,
+                "denied": True,
+                "reason": reason,
+            }), 403
+        return jsonify({
+            "authenticated": True,
+            "user_id": uid_hdr,
+            "session": sid,
+        }), 200
 
     if client_ip in recent_authentications:
         auth = recent_authentications[client_ip]
@@ -558,11 +744,28 @@ def auth_status():
         # Valid for 5 minutes
         if (datetime.utcnow() - auth_time).total_seconds() < 300:
             if auth.get("authenticated"):
-                return jsonify({
+                payload = {
                     "authenticated": True,
                     "username": auth.get("username"),
-                    "user_id": auth.get("user_id")
-                }), 200
+                    "user_id": auth.get("user_id"),
+                }
+                if mid:
+                    ok, reason, sid = _claim_device(
+                        requested_app,
+                        str(auth.get("user_id") or ""),
+                        mid,
+                        auth.get("username") or "",
+                        client_ip,
+                    )
+                    if not ok:
+                        return jsonify({
+                            "authenticated": False,
+                            "denied": True,
+                            "reason": reason,
+                            "username": auth.get("username", ""),
+                        }), 403
+                    payload["session"] = sid
+                return jsonify(payload), 200
             else:
                 # Access was denied
                 return jsonify({
@@ -574,6 +777,49 @@ def auth_status():
     
     # No auth attempt yet (still pending)
     return jsonify({"authenticated": False, "denied": False}), 401
+
+
+@app.route("/admin/security", methods=["GET"])
+def admin_security():
+    key = os.getenv("DEVICE_ADMIN_KEY", "")
+    if not key or request.args.get("key") != key:
+        return jsonify({"error": "not found"}), 404
+    events = []
+    try:
+        with open(_EVENTS_PATH, encoding="utf-8") as f:
+            lines = f.readlines()[-80:]
+        for line in lines:
+            line = line.strip()
+            if line:
+                events.append(json.loads(line))
+    except Exception:
+        pass
+    return jsonify({
+        "binds": _device_binds,
+        "live": {
+            k: {"mid": v.get("mid"), "last_seen": v.get("last_seen"), "ip": v.get("ip")}
+            for k, v in _live_sessions.items()
+        },
+        "events": events,
+    }), 200
+
+
+@app.route("/admin/unbind", methods=["GET", "POST"])
+def admin_unbind():
+    key = os.getenv("DEVICE_ADMIN_KEY", "")
+    if not key or request.args.get("key") != key:
+        return jsonify({"error": "not found"}), 404
+    user_id = (request.args.get("user_id") or "").strip()
+    app_key = (request.args.get("app") or "zero").strip().lower()
+    if not user_id:
+        return jsonify({"error": "user_id required"}), 400
+    bk = _bind_key(app_key, user_id)
+    with _dev_lock():
+        gone = _device_binds.pop(bk, None)
+        _live_sessions.pop(bk, None)
+        _save_binds()
+    _log_event("unbind", app=app_key, user_id=user_id, had=bool(gone))
+    return jsonify({"ok": True, "removed": gone}), 200
 
 
 @app.route("/health", methods=["GET"])
