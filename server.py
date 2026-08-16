@@ -431,7 +431,7 @@ def _drop_live(app_key, user_id):
 
 
 def _fetch_live_roles(user_id):
-    """Return role ids from Discord, [] if they are out, None if Discord is down."""
+    """Return role ids on a successful Discord read, or None if the lookup failed."""
     uid = str(user_id or "")
     guild = REQUIRED_GUILD_ID
     if not uid or not guild:
@@ -449,10 +449,10 @@ def _fetch_live_roles(user_id):
                 headers={"Authorization": "Bearer %s" % token},
                 timeout=5,
             )
-            if r.status_code in (401, 403, 404):
-                return []
+            logger.info("oauth role re-check user=%s status=%s", uid, r.status_code)
             if r.status_code == 200:
-                return r.json().get("roles") or []
+                return [str(x) for x in (r.json().get("roles") or [])]
+            # 401/403/429/5xx: token or Discord issue — not proof they lost the role
         except Exception as exc:
             logger.warning("oauth role re-check: %s", exc)
 
@@ -464,23 +464,22 @@ def _fetch_live_roles(user_id):
                 headers={"Authorization": "Bot %s" % bot},
                 timeout=5,
             )
-            if r.status_code in (401, 403, 404):
-                return []
+            logger.info("bot role re-check user=%s status=%s", uid, r.status_code)
             if r.status_code == 200:
-                return r.json().get("roles") or []
+                return [str(x) for x in (r.json().get("roles") or [])]
+            if r.status_code == 404:
+                return []
         except Exception as exc:
             logger.warning("bot role re-check: %s", exc)
     return None
 
 
 def _user_still_has_role(user_id, app_key):
-    """Re-check Discord roles on every heartbeat / cached login."""
-    required = ROLE_SETS.get(app_key) or []
+    """Re-check Discord roles. Only deny when Discord clearly shows the role is gone."""
+    required = [str(r) for r in (ROLE_SETS.get(app_key) or [])]
     uid = str(user_id or "")
     if not required or not uid or uid in ("authenticated", "None"):
         return True, ""
-    if _role_denied.get(uid):
-        return False, "You don't have the required role(s)"
     cache_key = "%s:%s" % (app_key, uid)
     now = datetime.utcnow().timestamp()
     hit = _ROLE_CACHE.get(cache_key)
@@ -488,14 +487,13 @@ def _user_still_has_role(user_id, app_key):
         return hit[1], hit[2]
     roles = _fetch_live_roles(uid)
     if roles is None:
-        # Discord/token unavailable — do not kick a paying user on a blip.
+        # Could not read Discord — keep the session.
         return True, ""
     ok = any(r in roles for r in required)
     reason = "" if ok else "You don't have the required role(s)"
     _ROLE_CACHE[cache_key] = (now + 20, ok, reason)
     if not ok:
-        _role_denied[uid] = True
-        logger.warning("role lost user=%s app=%s", uid, app_key)
+        logger.warning("role lost user=%s app=%s have=%s need=%s", uid, app_key, roles, required)
     return ok, reason
 
 
