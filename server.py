@@ -351,6 +351,9 @@ _EVENTS_PATH = os.path.join(_DATA_DIR, "auth_events.jsonl")
 _LIVE_TTL = 90  # seconds; heartbeat is ~40s so a crash can relogin after this
 _device_binds = {}
 _live_sessions = {}
+_role_denied = {}
+DISCORD_BOT_TOKEN = (os.getenv("DISCORD_BOT_TOKEN") or "").strip()
+_ROLE_CACHE = {}
 
 try:
     import threading as _threading
@@ -419,6 +422,81 @@ def _bind_key(app_key, user_id):
 
 
 _load_binds()
+
+
+def _drop_live(app_key, user_id):
+    key = _bind_key(app_key, user_id)
+    with _dev_lock():
+        _live_sessions.pop(key, None)
+
+
+def _fetch_live_roles(user_id):
+    """Return role ids from Discord, [] if they are out, None if Discord is down."""
+    uid = str(user_id or "")
+    guild = REQUIRED_GUILD_ID
+    if not uid or not guild:
+        return None
+
+    token = None
+    try:
+        token = discord_auth.get_cached_token(uid)
+    except Exception:
+        token = None
+    if token:
+        try:
+            r = requests.get(
+                "https://discord.com/api/v10/users/@me/guilds/%s/member" % guild,
+                headers={"Authorization": "Bearer %s" % token},
+                timeout=5,
+            )
+            if r.status_code in (401, 403, 404):
+                return []
+            if r.status_code == 200:
+                return r.json().get("roles") or []
+        except Exception as exc:
+            logger.warning("oauth role re-check: %s", exc)
+
+    bot = DISCORD_BOT_TOKEN
+    if bot:
+        try:
+            r = requests.get(
+                "https://discord.com/api/v10/guilds/%s/members/%s" % (guild, uid),
+                headers={"Authorization": "Bot %s" % bot},
+                timeout=5,
+            )
+            if r.status_code in (401, 403, 404):
+                return []
+            if r.status_code == 200:
+                return r.json().get("roles") or []
+        except Exception as exc:
+            logger.warning("bot role re-check: %s", exc)
+    return None
+
+
+def _user_still_has_role(user_id, app_key):
+    """Re-check Discord roles on every heartbeat / cached login."""
+    required = ROLE_SETS.get(app_key) or []
+    uid = str(user_id or "")
+    if not required or not uid or uid in ("authenticated", "None"):
+        return True, ""
+    if _role_denied.get(uid):
+        return False, "You don't have the required role(s)"
+    cache_key = "%s:%s" % (app_key, uid)
+    now = datetime.utcnow().timestamp()
+    hit = _ROLE_CACHE.get(cache_key)
+    if hit and hit[0] > now:
+        return hit[1], hit[2]
+    roles = _fetch_live_roles(uid)
+    if roles is None:
+        # Discord/token unavailable — do not kick a paying user on a blip.
+        return True, ""
+    ok = any(r in roles for r in required)
+    reason = "" if ok else "You don't have the required role(s)"
+    _ROLE_CACHE[cache_key] = (now + 20, ok, reason)
+    if not ok:
+        _role_denied[uid] = True
+        logger.warning("role lost user=%s app=%s", uid, app_key)
+    return ok, reason
 
 
 def _claim_device(app_key, user_id, mid, username, ip):
@@ -721,6 +799,14 @@ def auth_status():
 
     # Heartbeat from a compiled client that already has a user id + machine id.
     if uid_hdr and mid:
+        ok_role, role_reason = _user_still_has_role(uid_hdr, requested_app)
+        if not ok_role:
+            _drop_live(requested_app, uid_hdr)
+            return jsonify({
+                "authenticated": False,
+                "denied": True,
+                "reason": role_reason or "You don't have the required role(s)",
+            }), 403
         ok, reason, sid = _heartbeat_device(requested_app, uid_hdr, mid, sess, client_ip)
         if not ok:
             return jsonify({
@@ -744,6 +830,16 @@ def auth_status():
         # Valid for 5 minutes
         if (datetime.utcnow() - auth_time).total_seconds() < 300:
             if auth.get("authenticated"):
+                uid = str(auth.get("user_id") or "")
+                ok_role, role_reason = _user_still_has_role(uid, requested_app)
+                if not ok_role:
+                    _drop_live(requested_app, uid)
+                    return jsonify({
+                        "authenticated": False,
+                        "denied": True,
+                        "reason": role_reason or "You don't have the required role(s)",
+                        "username": auth.get("username", ""),
+                    }), 403
                 payload = {
                     "authenticated": True,
                     "username": auth.get("username"),
@@ -955,6 +1051,9 @@ def callback():
                     "app": app_key,
                     "timestamp": datetime.utcnow().isoformat()
                 }
+                _role_denied[str(user_id)] = True
+                _ROLE_CACHE.pop("%s:%s" % (app_key, user_id), None)
+                _drop_live(app_key, user_id)
                 return render_template_string(
                     DENIED_TEMPLATE,
                     reason=f"You don't have the required role(s)"
@@ -968,6 +1067,9 @@ def callback():
     session["user_info"] = user_info
 
     logger.info(f"User {user_id} ({user_info.get('username')}) successfully authenticated for app={app_key}")
+
+    _role_denied.pop(str(user_id), None)
+    _ROLE_CACHE.pop("%s:%s" % (app_key, user_id), None)
 
     # Store by IP so GUI can detect auth result
     recent_authentications[get_client_ip()] = {
