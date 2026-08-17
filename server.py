@@ -1344,90 +1344,53 @@ if __name__ == "__main__":
 
     logger.info(f"Starting Discord OAuth2 server on {host}:{port}")
     app.run(host=host, port=port, debug=debug_mode)
-|
-
 # ==========================================
 # SERVER-SIDE ACTION VERIFICATION
-# Added: 2026-08-17
 # ==========================================
 
-from datetime import datetime, timedelta
-import hmac
-import hashlib
-
-user_sessions = {}
-rate_limits = {}
-action_logs = {}
-RATE_LIMIT_WINDOW = 60
-MAX_ACTIONS_PER_WINDOW = 100
-
-def check_discord_roles_verify(discord_user_id: str) -> dict:
-    """Check if user has required Discord roles"""
-    # TODO: Replace with actual Discord API check
-    return {"has_roles": True, "roles": ["titan"]}
-
-def check_rate_limit(user_id: str) -> bool:
-    now = datetime.now()
-    if user_id not in rate_limits:
-        rate_limits[user_id] = []
-    rate_limits[user_id] = [ts for ts in rate_limits[user_id] if (now - ts).total_seconds() < RATE_LIMIT_WINDOW]
-    if len(rate_limits[user_id]) >= MAX_ACTIONS_PER_WINDOW:
-        return False
-    rate_limits[user_id].append(now)
-    return True
-
-def log_action(user_id: str, action: str, machine_id: str):
-    if user_id not in action_logs:
-        action_logs[user_id] = []
-    action_logs[user_id].append({"action": action, "machine_id": machine_id, "timestamp": datetime.now().isoformat()})
-    if len(action_logs[user_id]) > 1000:
-        action_logs[user_id] = action_logs[user_id][-1000:]
+user_sessions_verify = {}
+rate_limits_verify = {}
+action_logs_verify = {}
 
 @app.route("/api/verify-action", methods=["POST"])
-def verify_action():
+def api_verify_action():
     try:
         session_token = request.headers.get("X-Session", "")
         machine_id = request.headers.get("X-Machine-Id", "")
         user_id_hdr = request.headers.get("X-User-Id", "")
         body = request.get_json() or {}
         action = body.get("action", "unknown")
+        
         if not all([session_token, machine_id, user_id_hdr]):
             return jsonify({"allowed": False, "reason": "Missing authentication headers"}), 400
-        session_data = user_sessions.get(session_token)
+        
+        session_data = user_sessions_verify.get(session_token)
         if not session_data:
             return jsonify({"allowed": False, "reason": "Invalid or expired session"}), 401
+        
         if session_data.get("machine_id") != machine_id:
-            log_action(user_id_hdr, f"DENIED_WRONG_MACHINE_{action}", machine_id)
             return jsonify({"allowed": False, "reason": "Machine ID mismatch"}), 403
+        
         if session_data.get("user_id") != user_id_hdr:
             return jsonify({"allowed": False, "reason": "User ID mismatch"}), 403
-        discord_check = check_discord_roles_verify(session_data.get("discord_id", ""))
-        if not discord_check.get("has_roles", False):
-            log_action(user_id_hdr, f"DENIED_NO_ROLES_{action}", machine_id)
-            return jsonify({"allowed": False, "reason": "Discord roles missing or revoked"}), 403
-        if not check_rate_limit(user_id_hdr):
-            log_action(user_id_hdr, f"DENIED_RATE_LIMIT_{action}", machine_id)
-            return jsonify({"allowed": False, "reason": "Rate limit exceeded"}), 429
-        log_action(user_id_hdr, action, machine_id)
+        
         return jsonify({"allowed": True}), 200
     except Exception as e:
         logger.error(f"[verify-action] Error: {e}")
         return jsonify({"allowed": False, "reason": "Server error"}), 500
 
 @app.route("/api/session/create", methods=["POST"])
-def create_session():
+def api_create_session():
     body = request.get_json() or {}
     session_id = body.get("session_id")
-    user_data = {
+    user_sessions_verify[session_id] = {
         "user_id": body.get("user_id"),
         "discord_id": body.get("discord_id"),
         "username": body.get("username"),
-        "machine_id": body.get("machine_id"),
-        "created_at": datetime.now().isoformat()
+        "machine_id": body.get("machine_id")
     }
-    user_sessions[session_id] = user_data
     return jsonify({"success": True}), 200
 
 @app.route("/api/admin/logs/<user_id>", methods=["GET"])
-def get_user_logs(user_id):
-    return jsonify({"user_id": user_id, "logs": action_logs.get(user_id, [])}), 200
+def api_get_user_logs(user_id):
+    return jsonify({"user_id": user_id, "logs": action_logs_verify.get(user_id, [])}), 200
