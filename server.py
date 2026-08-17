@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, session, redirect, render_template_string
 from dotenv import load_dotenv
 import requests
-
+import traceback
 from discord_auth import DiscordAuth
 
 # Load environment variables
@@ -1468,7 +1468,6 @@ def auth_status():
     
     except Exception as e:
         print(f"[auth-status] Error: {e}")
-        import traceback
         traceback.print_exc()
         return jsonify({
             "authenticated": False,
