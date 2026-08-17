@@ -28,6 +28,9 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
 
+# Session storage for /auth-status endpoint
+active_sessions_auth = {}
+user_machines_auth = {}
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1394,3 +1397,82 @@ def api_create_session():
 @app.route("/api/admin/logs/<user_id>", methods=["GET"])
 def api_get_user_logs(user_id):
     return jsonify({"user_id": user_id, "logs": action_logs_verify.get(user_id, [])}), 200
+@app.route("/auth-status", methods=["GET"])
+def auth_status():
+    """
+    Heartbeat endpoint - clients check every 10 seconds.
+    Verifies user still has Discord roles and maintains session.
+    
+    Query params: ?app=titan&mid=<machine_id>
+    Headers: X-Machine-Id, X-User-Id, X-Session (optional)
+    
+    Returns 200 if authenticated, 403 if denied/no roles, 401 if invalid.
+    """
+    from datetime import datetime
+    import hashlib
+    
+    try:
+        # Extract parameters
+        machine_id = request.headers.get("X-Machine-Id", "") or request.args.get("mid", "")
+        user_id = request.headers.get("X-User-Id", "")
+        session_id = request.headers.get("X-Session", "")
+        
+        # Validate required fields
+        if not machine_id or not user_id:
+            return jsonify({"authenticated": False}), 401
+        
+        # TODO: Replace this with your actual Discord role check
+        # Example: has_roles = check_user_discord_roles(user_id)
+        has_roles = True  # TEMPORARY - allows all users
+        
+        if not has_roles:
+            return jsonify({
+                "authenticated": False,
+                "denied": True,
+                "reason": "No roles or roles revoked"
+            }), 403
+        
+        # Machine binding - prevent account sharing
+        if user_id in user_machines_auth:
+            if user_machines_auth[user_id] != machine_id:
+                return jsonify({
+                    "authenticated": False,
+                    "denied": True,
+                    "reason": "Machine ID mismatch - account sharing detected"
+                }), 403
+        else:
+            # First time seeing this user - register their machine
+            user_machines_auth[user_id] = machine_id
+        
+        # Create or validate session
+        if not session_id or session_id not in active_sessions_auth:
+            # Create new session
+            session_id = hashlib.sha256(
+                f"{user_id}:{machine_id}:{datetime.now().isoformat()}".encode()
+            ).hexdigest()[:32]
+            
+            active_sessions_auth[session_id] = {
+                "user_id": user_id,
+                "machine_id": machine_id,
+                "created": datetime.now(),
+                "last_check": datetime.now()
+            }
+        else:
+            # Update existing session timestamp
+            active_sessions_auth[session_id]["last_check"] = datetime.now()
+        
+        # Return success
+        return jsonify({
+            "authenticated": True,
+            "session": session_id,
+            "roles": ["titan"]  # Replace with actual roles if needed
+        }), 200
+    
+    except Exception as e:
+        print(f"[auth-status] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "authenticated": False,
+            "reason": "Server error"
+        }), 500
