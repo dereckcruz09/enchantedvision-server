@@ -1408,8 +1408,6 @@ def auth_status():
     
     Returns 200 if authenticated, 403 if denied/no roles, 401 if invalid.
     """
-    from datetime import datetime
-    import hashlib
     
     try:
         # Extract parameters
