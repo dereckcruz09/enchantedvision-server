@@ -1397,4 +1397,3 @@ def api_create_session():
 @app.route("/api/admin/logs/<user_id>", methods=["GET"])
 def api_get_user_logs(user_id):
     return jsonify({"user_id": user_id, "logs": action_logs_verify.get(user_id, [])}), 200
-@app.route("/auth-status", methods=["GET"])
