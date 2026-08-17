@@ -78,6 +78,13 @@ class DiscordAuth:
             "response_type": "code",
             "scope": " ".join(scopes),
             "state": state,
+            # Without this, Discord silently skips the consent screen and
+            # redirects back instantly whenever the browser already has an
+            # active Discord session that previously authorized this app -
+            # which looks like verification was skipped entirely on repeat
+            # logins. prompt=consent forces Discord to show and require an
+            # explicit click-through every single time.
+            "prompt": "consent",
         }
         query_string = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{AUTHORIZE_URL}?{query_string}"
