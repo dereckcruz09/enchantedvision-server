@@ -37,5 +37,12 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # Expose port (default 10000 for Render compatibility)
 EXPOSE ${PORT:-10000}
 
-# Run the application with gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "2", "--timeout", "60", "server:app"]
+# Run the application with gunicorn.
+# NOTE: this service runs as a Docker web service on Render, which executes
+# this CMD directly and ignores render.yaml's startCommand. --workers must
+# stay 1: _device_binds/_live_sessions/recent_authentications/_role_denied
+# are process-local in-memory dicts with no shared cache, so >1 worker lets
+# a customer's login land on one worker and their heartbeat land on
+# another, which never saw the bind and denies them with "Sign in again"
+# even though they have the required role.
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "1", "--timeout", "60", "server:app"]
