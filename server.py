@@ -58,6 +58,7 @@ ROLE_SETS = {
     "titan":  _parse_roles("DISCORD_REQUIRED_ROLES"),
     "remote": _parse_roles("DISCORD_REQUIRED_ROLES_REMOTE"),
     "zero":   _parse_roles("DISCORD_REQUIRED_ROLES_ZERO") or ZERO_ROLE_FALLBACK,
+    "secret": _parse_roles("DISCORD_REQUIRED_ROLES_SECRET"),
 }
 DEFAULT_APP = "titan"
 # Backward-compat alias: the generic /check-* endpoints still use REQUIRED_ROLES.
